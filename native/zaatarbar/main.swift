@@ -1,0 +1,376 @@
+// zaatarbar - Zaatar native menu bar app (replaces the SwiftBar rec.5s.sh plugin)
+//
+// States (title): idle "◎" / recording "● Nm" red / stray "●!" orange /
+//                 transcribing "◎…" / transcription FAILED "◎!" red.
+// Menu shells out to the existing `rec` CLI. Failure detection: a
+// transcribe-<base>.log with no running transcribe.sh process and no "Done:"
+// line means the pipeline died mid-flight -> alert once via zaatarprompt,
+// keep a Retry/Dismiss entry in the menu.
+//
+// Build: swiftc -O main.swift -o zaatarbar -framework AppKit -framework ServiceManagement
+
+import AppKit
+import AVFoundation
+import Darwin
+import ServiceManagement
+
+let fm = FileManager.default
+let home = NSHomeDirectory()
+
+// Config: plain KEY="value" lines in ~/.config/zaatar/config (same file the
+// shell scripts source). $HOME is the only substitution supported.
+func zaatarConfig() -> [String: String] {
+    var cfg: [String: String] = [:]
+    let path = ProcessInfo.processInfo.environment["ZAATAR_CONFIG"]
+        ?? "\(home)/.config/zaatar/config"
+    guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return cfg }
+    for rawLine in text.split(separator: "\n") {
+        let line = rawLine.trimmingCharacters(in: .whitespaces)
+        if line.hasPrefix("#") { continue }
+        guard let eq = line.firstIndex(of: "=") else { continue }
+        let key = String(line[..<eq])
+        let value = String(line[line.index(after: eq)...])
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            .replacingOccurrences(of: "$HOME", with: home)
+        cfg[key] = value
+    }
+    return cfg
+}
+let zcfg = zaatarConfig()
+
+let stateDir = zcfg["ZAATAR_STATE_DIR"] ?? "\(home)/.local/state/zaatar"
+let recDir = zcfg["ZAATAR_REC_DIR"] ?? "\(home)/Recordings/meetings"
+// Zaatar repo root: from config (needed when running as an .app bundle),
+// falling back to argv[0] at <root>/native/zaatarbar/zaatarbar.
+let toolDir = zcfg["ZAATAR_DIR"] ?? URL(fileURLWithPath: CommandLine.arguments[0])
+    .resolvingSymlinksInPath()
+    .deletingLastPathComponent()       // native/zaatarbar
+    .deletingLastPathComponent()       // native
+    .deletingLastPathComponent()       // repo root
+    .path
+let recCmd = "\(toolDir)/bin/rec"
+let transcribeCmd = "\(toolDir)/bin/transcribe.sh"
+let viewerCmd = "\(toolDir)/native/zaatarviewer/zaatarviewer"
+let zpromptCmd = "\(toolDir)/native/zaatarprompt/zaatarprompt"
+
+@discardableResult
+func sh(_ cmd: String) -> String {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/bin/bash")
+    p.arguments = ["-c", cmd]
+    var env = ProcessInfo.processInfo.environment
+    env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + (env["PATH"] ?? "")
+    p.environment = env
+    let pipe = Pipe()
+    p.standardOutput = pipe
+    p.standardError = FileHandle.nullDevice
+    do { try p.run() } catch { return "" }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+    return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+}
+
+func shAsync(_ cmd: String) {
+    DispatchQueue.global().async { sh(cmd) }
+}
+
+func readFile(_ path: String) -> String? {
+    (try? String(contentsOfFile: path, encoding: .utf8))?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+func hhmm(_ seconds: Int) -> String {
+    String(format: "%02d:%02d", seconds / 3600, (seconds % 3600) / 60)
+}
+
+// MARK: - State scan
+
+struct Snapshot {
+    var recording: (name: String, elapsed: Int)? = nil
+    var strays: [(pid: String, wav: String)] = []
+    var transcribing: [(base: String, elapsed: Int)] = []
+    var failed: [String] = []
+}
+
+func scan() -> Snapshot {
+    var s = Snapshot()
+    var knownPid = ""
+
+    // Active recording: rec.pid alive
+    if let pidStr = readFile("\(stateDir)/rec.pid"), let pid = Int32(pidStr), kill(pid, 0) == 0 {
+        knownPid = pidStr
+        var name = ((readFile("\(stateDir)/rec.meta") ?? "") as NSString).lastPathComponent
+        if name.hasSuffix(".wav") { name.removeLast(4) }
+        name = name.replacingOccurrences(of: "^[0-9-]+-[0-9]{4}-", with: "", options: .regularExpression)
+        let mtime = (try? fm.attributesOfItem(atPath: "\(stateDir)/rec.pid")[.modificationDate] as? Date)
+            .flatMap { $0 } ?? Date()
+        s.recording = (name.isEmpty ? "meeting" : name, Int(Date().timeIntervalSince(mtime)))
+    }
+
+    // Stray recorders: capture processes not matching the known pid
+    for line in sh("pgrep -f '(ffmpeg|zaatarcap) .*\(recDir)'").split(separator: "\n") {
+        let p = String(line)
+        if p.isEmpty || p == knownPid { continue }
+        let cmd = sh("ps -p \(p) -o command=")
+        let wav = cmd.range(of: "\(recDir)/[^ ]*\\.wav", options: .regularExpression)
+            .map { (String(cmd[$0]) as NSString).lastPathComponent } ?? "unknown.wav"
+        s.strays.append((p, wav))
+    }
+
+    // Running transcriptions
+    var runningBases = Set<String>()
+    for line in sh("ps ax -o command= | grep '[t]ranscribe.sh'").split(separator: "\n") {
+        if let r = line.range(of: "/[^/ ]+\\.wav", options: .regularExpression) {
+            var b = (String(line[r]) as NSString).lastPathComponent
+            b.removeLast(4)
+            runningBases.insert(b)
+        }
+    }
+
+    // Per-recording logs (last 7 days): running / done / FAILED
+    let cutoff = Date().addingTimeInterval(-7 * 86400)
+    for f in (try? fm.contentsOfDirectory(atPath: stateDir)) ?? [] {
+        guard f.hasPrefix("transcribe-"), f.hasSuffix(".log") else { continue }
+        let base = String(f.dropFirst("transcribe-".count).dropLast(4))
+        let logPath = "\(stateDir)/\(f)"
+        let attrs = try? fm.attributesOfItem(atPath: logPath)
+        let mtime = attrs?[.modificationDate] as? Date ?? .distantPast
+        guard mtime > cutoff else { continue }
+        if runningBases.contains(base) {
+            let birth = attrs?[.creationDate] as? Date ?? mtime
+            s.transcribing.append((base, Int(Date().timeIntervalSince(birth))))
+            continue
+        }
+        if fm.fileExists(atPath: "\(stateDir)/failed-dismissed-\(base)") { continue }
+        let content = (try? String(contentsOfFile: logPath, encoding: .utf8)) ?? ""
+        if !content.hasPrefix("Done:") && !content.contains("\nDone:") {
+            s.failed.append(base)
+        }
+    }
+    s.failed.sort()
+    return s
+}
+
+// MARK: - App
+
+// Active calendar event (from meet-watch's events cache) -> slug for name prefill
+func activeEventSlug() -> String? {
+    guard let data = fm.contents(atPath: "\(stateDir)/events-cache.json"),
+          let events = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return nil }
+    let iso = ISO8601DateFormatter()
+    let now = Date()
+    for ev in events {
+        guard let startStr = (ev["start"] as? [String: Any])?["dateTime"] as? String,
+              let endStr = (ev["end"] as? [String: Any])?["dateTime"] as? String,
+              let s = iso.date(from: startStr), let e = iso.date(from: endStr) else { continue }
+        // active window: 1 min before start .. 10 min past end (late manual starts)
+        guard now >= s.addingTimeInterval(-60), now < e.addingTimeInterval(600) else { continue }
+        let slug = (ev["summary"] as? String ?? "").lowercased()
+            .replacingOccurrences(of: "[^a-z0-9]+", with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        if !slug.isEmpty { return String(slug.prefix(40)) }
+    }
+    return nil
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    var statusItem: NSStatusItem!
+    var snap = Snapshot()
+
+    func applicationDidFinishLaunching(_ note: Notification) {
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        let menu = NSMenu()
+        menu.delegate = self
+        statusItem.menu = menu
+        setTitle("◎", nil)
+        refresh()
+        let timer = Timer(timeInterval: 3, repeats: true) { [weak self] _ in self?.refresh() }
+        RunLoop.main.add(timer, forMode: .common)
+        try? SMAppService.mainApp.register() // login item; visible in System Settings
+    }
+
+    func refresh() {
+        DispatchQueue.global().async {
+            let s = scan()
+            DispatchQueue.main.async {
+                self.snap = s
+                self.updateTitle()
+                self.alertNewFailures()
+            }
+        }
+    }
+
+    func setTitle(_ text: String, _ color: NSColor?) {
+        guard let button = statusItem.button else { return }
+        var attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
+        ]
+        if let color { attrs[.foregroundColor] = color }
+        button.attributedTitle = NSAttributedString(string: text, attributes: attrs)
+    }
+
+    func updateTitle() {
+        if let r = snap.recording { setTitle("● \(r.elapsed / 60)m", .systemRed) }
+        else if !snap.strays.isEmpty { setTitle("●!", .systemOrange) }
+        else if !snap.transcribing.isEmpty { setTitle("◎…", nil) }
+        else if !snap.failed.isEmpty { setTitle("◎!", .systemRed) }
+        else { setTitle("◎", nil) }
+    }
+
+    // MARK: Menu
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        func add(_ title: String, _ action: Selector? = nil, repr: Any? = nil, indent: Int = 0) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = action == nil ? nil : self
+            item.representedObject = repr
+            item.indentationLevel = indent
+            menu.addItem(item)
+        }
+        func sep() { menu.addItem(.separator()) }
+
+        if let r = snap.recording {
+            add("Recording: \(r.name) (\(hhmm(r.elapsed)))")
+            add("Stop (fast, no diarization)", #selector(stopFast))
+            add("Stop (full)", #selector(stopFull))
+        } else {
+            add("Not recording")
+            add("Start recording...", #selector(startRecording))
+        }
+
+        if !snap.strays.isEmpty {
+            sep()
+            add("STRAY recorder (pid file lost)")
+            for st in snap.strays { add("\(st.wav) (pid \(st.pid))", indent: 1) }
+            add("Stop stray + transcribe", #selector(stopStrays))
+        }
+
+        if !snap.transcribing.isEmpty {
+            sep()
+            for t in snap.transcribing { add("Transcribing: \(t.base) (\(hhmm(t.elapsed)))") }
+        }
+
+        if !snap.failed.isEmpty {
+            sep()
+            for base in snap.failed {
+                add("FAILED: \(base)")
+                add("Retry (full)", #selector(retryFull(_:)), repr: base, indent: 1)
+                add("Retry (fast, no diarization)", #selector(retryFast(_:)), repr: base, indent: 1)
+                add("Dismiss", #selector(dismissFailure(_:)), repr: base, indent: 1)
+            }
+        }
+
+        sep()
+        add(snap.recording != nil ? "Transcripts (live)..." : "Transcripts...", #selector(openViewer))
+        sep()
+        add("Quit Zaatarbar", #selector(quit))
+    }
+
+    // MARK: Actions
+
+    @objc func stopFast() { shAsync("'\(recCmd)' stop --fast") }
+    @objc func stopFull() { shAsync("'\(recCmd)' stop") }
+    @objc func quit() { NSApp.terminate(nil) }
+
+    @objc func startRecording() {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Meeting name"
+        alert.informativeText = "Recording starts immediately."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 230, height: 24))
+        field.stringValue = activeEventSlug() ?? "meeting"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Start")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        var slug = field.stringValue.lowercased()
+            .replacingOccurrences(of: "[^a-z0-9]+", with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        if slug.isEmpty { slug = "meeting" }
+        shAsync("'\(recCmd)' start '\(slug)'")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.refresh() }
+    }
+
+    @objc func stopStrays() {
+        // Kill stray recorders only (never the known pid), then transcribe their wavs
+        shAsync("""
+        KNOWN="$(cat '\(stateDir)/rec.pid' 2>/dev/null || true)"
+        for P in $(pgrep -f "(ffmpeg|zaatarcap) .*\(recDir)" || true); do
+          [ "$P" = "$KNOWN" ] && continue
+          WAV="$(ps -p "$P" -o command= | grep -o "\(recDir)/[^ ]*\\.wav" || true)"
+          kill -INT "$P" 2>/dev/null
+          for _ in $(seq 1 20); do kill -0 "$P" 2>/dev/null || break; sleep 0.5; done
+          kill -0 "$P" 2>/dev/null && kill -KILL "$P" 2>/dev/null
+          if [ -n "$WAV" ] && [ -f "$WAV" ]; then
+            TLOG="\(stateDir)/transcribe-$(basename "$WAV" .wav).log"
+            nohup '\(transcribeCmd)' --fast "$WAV" >"$TLOG" 2>&1 &
+          fi
+        done
+        """)
+    }
+
+    @objc func openViewer() {
+        shAsync("""
+        if pgrep -x zaatarviewer >/dev/null; then
+          osascript -e 'tell application "System Events" to set frontmost of first process whose name is "zaatarviewer" to true' >/dev/null 2>&1
+        else
+          nohup '\(viewerCmd)' >/dev/null 2>&1 &
+        fi
+        """)
+    }
+
+    @objc func retryFull(_ sender: NSMenuItem) { retry(sender.representedObject as? String, fast: false) }
+    @objc func retryFast(_ sender: NSMenuItem) { retry(sender.representedObject as? String, fast: true) }
+
+    func retry(_ base: String?, fast: Bool) {
+        guard let base else { return }
+        try? fm.removeItem(atPath: "\(stateDir)/failed-alerted-\(base)")
+        try? fm.removeItem(atPath: "\(stateDir)/failed-dismissed-\(base)")
+        let wav = "\(recDir)/\(base).wav"
+        guard fm.fileExists(atPath: wav) else {
+            fm.createFile(atPath: "\(stateDir)/failed-dismissed-\(base)", contents: nil)
+            shAsync("'\(zpromptCmd)' --title 'Cannot retry' --subtitle 'WAV missing: \(base)' --button 'OK' --timeout 30")
+            refresh()
+            return
+        }
+        let log = "\(stateDir)/transcribe-\(base).log"
+        shAsync("nohup '\(transcribeCmd)' \(fast ? "--fast " : "")'\(wav)' >'\(log)' 2>&1 &")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.refresh() }
+    }
+
+    @objc func dismissFailure(_ sender: NSMenuItem) {
+        guard let base = sender.representedObject as? String else { return }
+        fm.createFile(atPath: "\(stateDir)/failed-dismissed-\(base)", contents: nil)
+        refresh()
+    }
+
+    // MARK: Failure alerts (once per failure, via zaatarprompt panel)
+
+    func alertNewFailures() {
+        for base in snap.failed {
+            let marker = "\(stateDir)/failed-alerted-\(base)"
+            guard !fm.fileExists(atPath: marker) else { continue }
+            fm.createFile(atPath: marker, contents: nil)
+            DispatchQueue.global().async {
+                let btn = sh("'\(zpromptCmd)' --title 'Transcription failed' --subtitle '\(base)' --primary 'Retry' --button 'Dismiss' --timeout 120")
+                DispatchQueue.main.async {
+                    switch btn {
+                    case "Retry": self.retry(base, fast: false)
+                    case "Dismiss":
+                        fm.createFile(atPath: "\(stateDir)/failed-dismissed-\(base)", contents: nil)
+                        self.refresh()
+                    default: break // timeout: stays visible in the menu as FAILED
+                    }
+                }
+            }
+        }
+    }
+}
+
+let app = NSApplication.shared
+app.setActivationPolicy(.accessory)
+let delegate = AppDelegate()
+app.delegate = delegate
+app.run()

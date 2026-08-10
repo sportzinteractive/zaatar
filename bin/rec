@@ -1,0 +1,185 @@
+#!/bin/bash
+# rec - Zaatar meeting recorder (mic + system audio)
+# Usage: rec start [meeting-name] | rec stop [--fast] | rec status
+set -euo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+SCRIPT_PATH="$0"; [ -L "$SCRIPT_PATH" ] && SCRIPT_PATH="$(readlink -f "$SCRIPT_PATH")"
+BIN_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+. "$BIN_DIR/../lib/config.sh"
+
+REC_DIR="$ZAATAR_REC_DIR"
+STATE_DIR="$ZAATAR_STATE_DIR"
+TRANSCRIBE="$BIN_DIR/transcribe.sh"
+mkdir -p "$REC_DIR" "$STATE_DIR"
+
+PID_FILE="$STATE_DIR/rec.pid"
+META_FILE="$STATE_DIR/rec.meta"
+SRC_FILE="$STATE_DIR/rec.src"
+# Native capture binary: the app bundle holds its own mic + system-audio TCC
+# grants, so recording works even when started from launchd.
+ZCAP="$ZAATAR_CAP_BIN"
+
+find_device_index() {
+  # $1 = device name substring
+  ffmpeg -f avfoundation -list_devices true -i "" 2>&1 \
+    | sed -n '/audio devices/,$p' \
+    | grep -i "$1" | head -1 | sed -E 's/.*\[([0-9]+)\].*/\1/'
+}
+
+case "${1:-}" in
+  start)
+    if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+      echo "Already recording (pid $(cat "$PID_FILE")). Run 'rec stop' first."
+      exit 1
+    fi
+    # Catch orphaned recorders whose pid file was lost/overwritten
+    STRAYS="$(pgrep -f "(ffmpeg|zaatarcap) .*$REC_DIR" || true)"
+    if [ -n "$STRAYS" ]; then
+      echo "ERROR: stray recorder(s) already writing to $REC_DIR (pid: $STRAYS)."
+      echo "Stop them first: kill -INT $STRAYS"
+      exit 1
+    fi
+    NAME="${2:-meeting}"
+    TS="$(date +%Y-%m-%d-%H%M)"
+    OUT="$REC_DIR/${TS}-${NAME}.wav"
+
+    if [ -x "$ZCAP" ]; then
+      # Native capture: bundle owns the mic TCC grant, safe from any context
+      nohup "$ZCAP" "$OUT" >/dev/null 2>"$STATE_DIR/zaatarcap.err" &
+      SRC="zaatarcap"
+      echo $! > "$PID_FILE"
+      echo "$OUT" > "$META_FILE"
+      echo "$SRC" > "$SRC_FILE"
+      # Rough live transcript (small model) for the viewer; final quality pass at stop
+      LIVE_SH="$BIN_DIR/live-transcribe.sh"
+      if [ -x "$LIVE_SH" ]; then
+        rm -f "$STATE_DIR"/live-*.txt
+        nohup "$LIVE_SH" "$OUT" >/dev/null 2>"$STATE_DIR/live-transcribe.err" &
+        echo $! > "$STATE_DIR/live.pid"
+      fi
+      # Mic gain floor: browser AGC (e.g. Meet in Chrome) silently drags the
+      # macOS input volume down, making the local speaker's voice too quiet
+      # for whisper. Re-assert a floor every 30s while this recording runs.
+      if [ "${ZAATAR_MIC_GAIN_FLOOR:-0}" -gt 0 ]; then
+        ( while kill -0 "$(cat "$PID_FILE" 2>/dev/null || echo 0)" 2>/dev/null; do
+            CUR="$(osascript -e 'input volume of (get volume settings)' 2>/dev/null || echo 100)"
+            [ "${CUR:-100}" -lt "$ZAATAR_MIC_GAIN_FLOOR" ] && \
+              osascript -e "set volume input volume $ZAATAR_MIC_GAIN_FLOOR" >/dev/null 2>&1
+            sleep 30
+          done
+        ) >/dev/null 2>&1 &
+      fi
+      # Silence watchdog: read the peak-level sidecar zaatarcap writes every 5s.
+      # Check at 30s (not earlier: nobody may have spoken yet) and only alert on
+      # near-digital silence (-88), not a quiet room - false alarms erode trust.
+      ( sleep 30
+        MAXV="$(cat "$OUT.level" 2>/dev/null || echo -91)"
+        MAXI="$(printf '%.0f' "${MAXV:--91}" 2>/dev/null || echo -91)"
+        if [ "$MAXI" -le -88 ]; then
+          osascript -e 'display dialog "WARNING: recording is SILENT (no mic signal). Check System Settings > Privacy > Microphone > ZaatarCap." with title "Zaatar" buttons {"OK"} with icon caution' >/dev/null 2>&1
+        fi
+      ) >/dev/null 2>&1 &
+      echo "Recording -> $OUT [$SRC]"
+      echo "Stop with: rec stop"
+      exit 0
+    fi
+
+    # ---- ffmpeg fallback (ZaatarCap.app missing) ----
+    MIC_IDX="$(find_device_index "microphone" || true)"
+    BH_IDX="$(find_device_index "blackhole" || true)"
+
+    if [ -z "${MIC_IDX:-}" ]; then echo "ERROR: no microphone device found"; exit 1; fi
+
+    if [ -n "${BH_IDX:-}" ]; then
+      # Record mic + system audio (BlackHole loopback), mix to mono 16kHz
+      nohup ffmpeg -hide_banner -loglevel error \
+        -f avfoundation -i ":${MIC_IDX}" \
+        -f avfoundation -i ":${BH_IDX}" \
+        -filter_complex "amix=inputs=2:duration=longest:normalize=0,dynaudnorm=f=150:g=15,aresample=16000,pan=mono|c0=c0" \
+        -c:a pcm_s16le "$OUT" >/dev/null 2>"$STATE_DIR/ffmpeg.err" &
+      SRC="mic+system"
+    else
+      # Mic only fallback
+      nohup ffmpeg -hide_banner -loglevel error \
+        -f avfoundation -i ":${MIC_IDX}" \
+        -af "dynaudnorm=f=150:g=15,aresample=16000,pan=mono|c0=c0" \
+        -c:a pcm_s16le "$OUT" >/dev/null 2>"$STATE_DIR/ffmpeg.err" &
+      SRC="mic"
+    fi
+    echo $! > "$PID_FILE"
+    echo "$OUT" > "$META_FILE"
+    echo "ffmpeg" > "$SRC_FILE"
+    # Silence watchdog: TCC-denied contexts record digital zeros with no error.
+    ( sleep 12
+      MAXV="$(ffmpeg -hide_banner -t 8 -i "$OUT" -af volumedetect -f null - 2>&1 | sed -n 's/.*max_volume: \([0-9.-]*\) dB.*/\1/p')"
+      MAXI="$(printf '%.0f' "${MAXV:--91}" 2>/dev/null || echo -91)"
+      if [ "$MAXI" -le -80 ]; then
+        osascript -e 'display dialog "WARNING: recording is SILENT (no mic signal). Started from an app without mic permission? Stop and restart from Terminal." with title "Zaatar" buttons {"OK"} with icon caution' >/dev/null 2>&1
+      fi
+    ) >/dev/null 2>&1 &
+    echo "Recording -> $OUT [$SRC]"
+    echo "Stop with: rec stop"
+    ;;
+  stop)
+    if [ ! -f "$PID_FILE" ]; then echo "Not recording."; exit 1; fi
+    TFLAGS=()
+    [ "${2:-}" = "--fast" ] && TFLAGS+=(--fast)
+    PID="$(cat "$PID_FILE")"
+    OUT="$(cat "$META_FILE")"
+    SRC="$(cat "$SRC_FILE" 2>/dev/null || echo ffmpeg)"
+    kill -INT "$PID" 2>/dev/null || true
+    # wait for the recorder to finalize the file
+    for _ in $(seq 1 20); do kill -0 "$PID" 2>/dev/null || break; sleep 0.5; done
+    if kill -0 "$PID" 2>/dev/null; then
+      echo "WARN: recorder (pid $PID) did not exit after SIGINT; sending SIGKILL"
+      kill -KILL "$PID" 2>/dev/null || true
+      sleep 1
+    fi
+    rm -f "$PID_FILE" "$META_FILE" "$SRC_FILE" "$OUT.level"
+    # stop the live-transcript loop (it also exits on its own when the recorder dies)
+    if [ -f "$STATE_DIR/live.pid" ]; then
+      kill "$(cat "$STATE_DIR/live.pid")" 2>/dev/null || true
+      rm -f "$STATE_DIR/live.pid"
+    fi
+    # Surface any other recorders still running (lost pid file)
+    STRAYS="$(pgrep -f "(ffmpeg|zaatarcap) .*$REC_DIR" || true)"
+    if [ -n "$STRAYS" ]; then
+      echo "WARN: other recorder(s) still running (pid: $STRAYS). Stop with: kill -INT $STRAYS"
+    fi
+    # zaatarcap records raw; apply the loudness normalization ffmpeg used to do live
+    # (quiet remote participants trigger whisper hallucination loops)
+    if [ "$SRC" = "zaatarcap" ] && [ -s "$OUT" ]; then
+      if ffmpeg -hide_banner -loglevel error -i "$OUT" \
+           -af "dynaudnorm=f=150:g=15" -c:a pcm_s16le "$OUT.norm.wav" 2>>"$STATE_DIR/ffmpeg.err"; then
+        mv "$OUT.norm.wav" "$OUT"
+      else
+        rm -f "$OUT.norm.wav"
+        echo "WARN: normalization failed, transcribing raw audio"
+      fi
+    fi
+    echo "Recording saved: $OUT"
+    TLOG="$STATE_DIR/transcribe-$(basename "$OUT" .wav).log"
+    echo "Transcribing in background (log: $TLOG)..."
+    nohup "$TRANSCRIBE" ${TFLAGS[@]+"${TFLAGS[@]}"} "$OUT" >"$TLOG" 2>&1 &
+    ;;
+  status)
+    if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+      echo "Recording: $(cat "$META_FILE") (pid $(cat "$PID_FILE"))"
+    else
+      echo "Not recording."
+    fi
+    STRAYS="$(pgrep -f "(ffmpeg|zaatarcap) .*$REC_DIR" || true)"
+    if [ -n "$STRAYS" ]; then
+      KNOWN="$(cat "$PID_FILE" 2>/dev/null || true)"
+      for P in $STRAYS; do
+        [ "$P" = "$KNOWN" ] && continue
+        echo "WARN: stray recorder pid $P -> $(ps -p "$P" -o command= | grep -o "$REC_DIR[^ ]*")"
+      done
+    fi
+    ;;
+  *)
+    echo "Usage: rec start [meeting-name] | rec stop [--fast] | rec status"
+    exit 1
+    ;;
+esac

@@ -1,0 +1,12 @@
+# compiled binaries
+native/zaatarcap/zaatarcap
+native/zaatarprompt/zaatarprompt
+native/zaatarviewer/zaatarviewer
+native/zaatarbar/zaatarbar
+
+# vad virtualenv
+vad/.venv/
+
+*.wav
+__pycache__/
+.DS_Store

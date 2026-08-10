@@ -1,0 +1,4 @@
+silero-vad
+soundfile
+numpy
+torch

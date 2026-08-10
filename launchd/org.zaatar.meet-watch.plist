@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>org.zaatar.meet-watch</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>__ZAATAR_DIR__/bin/meet-watch.sh</string>
+	</array>
+	<key>StartInterval</key>
+	<integer>60</integer>
+	<key>RunAtLoad</key>
+	<true/>
+	<!-- REQUIRED: launchd SIGKILLs the job's process group on exit, which
+	     silently kills the background transcription started by rec stop. -->
+	<key>AbandonProcessGroup</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/tmp/zaatar-meet-watch.err</string>
+</dict>
+</plist>
