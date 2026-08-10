@@ -28,6 +28,12 @@ trap 'rm -rf "$TMP"' EXIT
 [ -f "$MODEL" ] || { echo "ERROR: model missing at $MODEL"; exit 1; }
 [ -f "$AUDIO" ] || { echo "ERROR: audio missing at $AUDIO"; exit 1; }
 
+# Title sidecar (written by meet-watch): the real calendar event title.
+# The filename slug is lossy (lowercased, punctuation stripped, 40-char cut).
+TITLE_FILE="$(dirname "$AUDIO")/${BASE}.title"
+MTITLE=""
+[ -s "$TITLE_FILE" ] && MTITLE="$(head -1 "$TITLE_FILE")"
+
 # --- VAD junk guard: a recording with no real speech makes whisper hallucinate
 # an entire fake transcript. Skip the pipeline instead.
 VAD_PY="$BIN_DIR/../vad/.venv/bin/python"
@@ -37,7 +43,8 @@ if [ "${ZAATAR_VAD_MIN_SPEECH:-0}" -gt 0 ] && [ -x "$VAD_PY" ] && [ -f "$VAD_SCR
   if [ -n "$SPEECH_SECS" ] && [ "$SPEECH_SECS" -lt "$ZAATAR_VAD_MIN_SPEECH" ]; then
     MD="$OUT_DIR/${BASE}.md"
     {
-      echo "# ${BASE} - no speech detected"
+      echo "<!-- zaatar-title: ${MTITLE:-$BASE} -->"
+      echo "# ${MTITLE:-$BASE} - no speech detected"
       echo
       echo "VAD found ${SPEECH_SECS}s of speech in this recording; transcription skipped (empty-room audio would produce a hallucinated transcript)."
       echo
@@ -169,6 +176,7 @@ fi
 
 if [ "$CLEAN_OK" = true ]; then
   {
+    [ -n "$MTITLE" ] && echo "<!-- zaatar-title: ${MTITLE} -->"
     cat "$TMP/clean.md"
     echo
     echo "---"
@@ -187,7 +195,10 @@ else
     head -c 2048 "$TMP/clean.md" 2>/dev/null || true
   } > "$ERR_KEEP"
   echo "Error log kept: $ERR_KEEP"
-  cp "$RAW_MD" "$MD"
+  {
+    [ -n "$MTITLE" ] && echo "<!-- zaatar-title: ${MTITLE} -->"
+    cat "$RAW_MD"
+  } > "$MD"
 fi
 
 # Generic name ("meeting"): derive a real name from the transcript summary and rename
@@ -200,6 +211,7 @@ if [[ "$BASE" =~ -meeting$ ]] && [ "$CLEAN_OK" = true ]; then
     mv "$MD" "$OUT_DIR/${NEWBASE}.md" && mv "$RAW_MD" "$OUT_DIR/${NEWBASE}-raw.md"
     [ -f "$AUDIO" ] && mv "$AUDIO" "$(dirname "$AUDIO")/${NEWBASE}.wav"
     [ -f "$ATT_FILE" ] && mv "$ATT_FILE" "$(dirname "$AUDIO")/${NEWBASE}.attendees"
+    [ -f "$TITLE_FILE" ] && mv "$TITLE_FILE" "$(dirname "$AUDIO")/${NEWBASE}.title"
     MD="$OUT_DIR/${NEWBASE}.md"; RAW_MD="$OUT_DIR/${NEWBASE}-raw.md"
     sed -i '' "s|${BASE}|${NEWBASE}|g" "$MD" "$RAW_MD" 2>/dev/null || true
     echo "Renamed to: $NEWBASE"

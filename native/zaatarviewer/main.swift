@@ -60,6 +60,19 @@ func humanTitle(from filename: String) -> (String, String) {
     return (base, "")
 }
 
+// Real event title embedded by transcribe.sh as "<!-- zaatar-title: ... -->"
+// (the filename slug is lossy: lowercased, punctuation stripped, 40-char cut)
+func storedTitle(of url: URL) -> String? {
+    guard let fh = try? FileHandle(forReadingFrom: url) else { return nil }
+    defer { try? fh.close() }
+    guard let data = try? fh.read(upToCount: 512) else { return nil }
+    let head = String(decoding: data, as: UTF8.self)
+    guard let r = head.range(of: #"<!-- zaatar-title: .* -->"#, options: .regularExpression) else { return nil }
+    let title = head[r].dropFirst("<!-- zaatar-title: ".count).dropLast(" -->".count)
+        .trimmingCharacters(in: .whitespaces)
+    return title.isEmpty ? nil : title
+}
+
 func loadEntries() -> [Entry] {
     var entries: [Entry] = []
     let fm = FileManager.default
@@ -80,7 +93,8 @@ func loadEntries() -> [Entry] {
 
     if let files = try? fm.contentsOfDirectory(at: transcriptsDir, includingPropertiesForKeys: [.contentModificationDateKey]) {
         for f in files where f.pathExtension == "md" && !f.lastPathComponent.hasSuffix("-raw.md") {
-            let (name, when) = humanTitle(from: f.lastPathComponent)
+            let (fallback, when) = humanTitle(from: f.lastPathComponent)
+            let name = storedTitle(of: f) ?? fallback
             let mtime = (try? f.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
             entries.append(Entry(title: name, subtitle: when, url: f, isLive: false, mtime: mtime))
         }

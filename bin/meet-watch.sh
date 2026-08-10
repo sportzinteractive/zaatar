@@ -30,7 +30,7 @@ if [ "${ZAATAR_WAV_RETENTION_DAYS:-0}" -gt 0 ] && { [ ! -f "$RETAIN_MARK" ] || [
     B="$(basename "$W" .wav)"
     # keep the wav if there is no final transcript (failed/missing = still needed for retry)
     if [ -s "$ZAATAR_TRANSCRIPTS_DIR/$B.md" ]; then
-      rm -f "$W" "$W.level"
+      rm -f "$W" "$W.level" "${W%.wav}.attendees" "${W%.wav}.title"
       echo "$(date '+%F %T') INFO: retention deleted $W" >> "$STATE_DIR/meet-watch.log"
     fi
   done
@@ -153,6 +153,11 @@ start_recording() {
   WAV="$(cat "$STATE_DIR/rec.meta" 2>/dev/null || true)"
   if [ -n "$EV_ATT" ] && [ -n "$WAV" ]; then
     printf '%s\n' "$EV_ATT" > "${WAV%.wav}.attendees"
+  fi
+  # title sidecar: preserves the real event title (the slug is lossy - lowercased,
+  # punctuation stripped, truncated at 40 chars); transcribe.sh embeds it in the md
+  if [ -n "$WAV" ]; then
+    printf '%s\n' "$EV_TITLE" > "${WAV%.wav}.title"
   fi
 }
 
