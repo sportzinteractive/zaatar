@@ -34,6 +34,7 @@ the `claude` CLI; you keep the timestamped raw transcript).
 
 ```sh
 ./scripts/build.sh                       # compile + install app bundles
+mkdir -p ~/.config/zaatar
 cp config.example.sh ~/.config/zaatar/config   # edit to taste
 bin/rec start my-meeting                 # first run prompts for mic + system audio
 bin/rec stop

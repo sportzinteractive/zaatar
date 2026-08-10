@@ -59,7 +59,8 @@ ATTENDEES=""
 echo "[1/3] Original-language transcript (whisper.cpp)..."
 WPROMPT=()
 [ -n "$ATTENDEES" ] && WPROMPT=(--prompt "Meeting participants: ${ATTENDEES}." --carry-initial-prompt)
-"$WHISPER" -m "$MODEL" -f "$AUDIO" -l auto -mc 0 "${WPROMPT[@]}" -osrt -of "$TMP/orig" 2>&1 | tail -1
+# ${arr[@]+...} idiom: bash 3.2 + set -u treats an empty array expansion as fatal
+"$WHISPER" -m "$MODEL" -f "$AUDIO" -l auto -mc 0 ${WPROMPT[@]+"${WPROMPT[@]}"} -osrt -of "$TMP/orig" 2>&1 | tail -1
 
 DIARIZED_OK=false
 if [ "$FAST" = false ] && [ -n "$HF_TOKEN" ] && command -v whisperx >/dev/null; then

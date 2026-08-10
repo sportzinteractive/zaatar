@@ -82,7 +82,7 @@ func loadEntries() -> [Entry] {
         for f in files where f.pathExtension == "md" && !f.lastPathComponent.hasSuffix("-raw.md") {
             let (name, when) = humanTitle(from: f.lastPathComponent)
             let mtime = (try? f.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-            entries.append(Entry(title: name, subtitle: when, url: f, isLive: false, mtime: mtime ?? .distantPast))
+            entries.append(Entry(title: name, subtitle: when, url: f, isLive: false, mtime: mtime))
         }
     }
     return entries.sorted { $0.mtime > $1.mtime }
