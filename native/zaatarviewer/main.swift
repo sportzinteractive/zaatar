@@ -102,34 +102,71 @@ func loadEntries() -> [Entry] {
     return entries.sorted { $0.mtime > $1.mtime }
 }
 
+// Inline markdown: **bold** runs become semibold, everything else keeps `base`.
+func inlineStyled(_ line: String, base: [NSAttributedString.Key: Any]) -> NSAttributedString {
+    let out = NSMutableAttributedString()
+    let baseFont = (base[.font] as? NSFont) ?? NSFont.systemFont(ofSize: 13)
+    let boldFont = NSFont.systemFont(ofSize: baseFont.pointSize, weight: .semibold)
+    let parts = line.components(separatedBy: "**")
+    for (i, part) in parts.enumerated() {
+        var attrs = base
+        // odd segments are between ** markers; unbalanced trailing ** degrades gracefully
+        if i % 2 == 1 && parts.count > i + 1 { attrs[.font] = boldFont }
+        out.append(NSAttributedString(string: part, attributes: attrs))
+    }
+    return out
+}
+
 func styled(_ text: String, isLive: Bool) -> NSAttributedString {
     let out = NSMutableAttributedString()
+    let mono: [NSAttributedString.Key: Any] = [
+        .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
+        .foregroundColor: NSColor.labelColor,
+    ]
     if isLive {
         out.append(NSAttributedString(
             string: "ROUGH LIVE PREVIEW (small model, expect errors) - the accurate transcript is generated after the recording stops\n\n",
             attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .bold),
                          .foregroundColor: NSColor.systemOrange]))
+        out.append(NSAttributedString(string: text, attributes: mono))
+        return out
     }
     let body: [NSAttributedString.Key: Any] = [
         .font: NSFont.systemFont(ofSize: 13),
-        .foregroundColor: NSColor.labelColor,
-    ]
-    let mono: [NSAttributedString.Key: Any] = [
-        .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
         .foregroundColor: NSColor.labelColor,
     ]
     func header(_ size: CGFloat) -> [NSAttributedString.Key: Any] {
         [.font: NSFont.systemFont(ofSize: size, weight: .semibold),
          .foregroundColor: NSColor.labelColor]
     }
+    var inFence = false
     for lineSub in text.components(separatedBy: "\n") {
         var line = lineSub
-        var attrs = isLive ? mono : body
-        if line.hasPrefix("### ") { line = String(line.dropFirst(4)); attrs = header(13) }
-        else if line.hasPrefix("## ") { line = String(line.dropFirst(3)); attrs = header(15) }
-        else if line.hasPrefix("# ") { line = String(line.dropFirst(2)); attrs = header(18) }
-        line = line.replacingOccurrences(of: "**", with: "")
-        out.append(NSAttributedString(string: line + "\n", attributes: attrs))
+        if line.hasPrefix("```") { inFence.toggle(); continue }
+        if inFence {
+            out.append(NSAttributedString(string: line + "\n", attributes: mono))
+            continue
+        }
+        if line.hasPrefix("### ") {
+            line = String(line.dropFirst(4)).replacingOccurrences(of: "**", with: "")
+            out.append(NSAttributedString(string: line + "\n", attributes: header(13)))
+            continue
+        }
+        if line.hasPrefix("## ") {
+            line = String(line.dropFirst(3)).replacingOccurrences(of: "**", with: "")
+            out.append(NSAttributedString(string: line + "\n", attributes: header(15)))
+            continue
+        }
+        if line.hasPrefix("# ") {
+            line = String(line.dropFirst(2)).replacingOccurrences(of: "**", with: "")
+            out.append(NSAttributedString(string: line + "\n", attributes: header(18)))
+            continue
+        }
+        // bullets: "- item" / "* item" (any indent) -> bullet glyph
+        line = line.replacingOccurrences(
+            of: #"^(\s*)[-*] (?=\S)"#, with: "$1\u{2022}  ", options: .regularExpression)
+        out.append(inlineStyled(line, base: body))
+        out.append(NSAttributedString(string: "\n", attributes: body))
     }
     return out
 }
@@ -145,20 +182,32 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
     let search = NSSearchField()
     var timer: Timer?
     var selectedURL: URL?
+    var contentCache: [URL: String] = [:]
 
     func reload(keepSelection: Bool = true) {
         let prev = selectedURL
         all = loadEntries()
+        contentCache.removeAll()
         applyFilter()
         if keepSelection, let p = prev, let idx = filtered.firstIndex(where: { $0.url == p }) {
             table.selectRowIndexes([idx], byExtendingSelection: false)
         }
     }
 
+    // full-text: falls back to file contents when title/subtitle don't match
+    func contentMatches(_ e: Entry, _ q: String) -> Bool {
+        if e.isLive { return false }
+        if let cached = contentCache[e.url] { return cached.contains(q) }
+        let c = ((try? String(contentsOf: e.url, encoding: .utf8)) ?? "").lowercased()
+        contentCache[e.url] = c
+        return c.contains(q)
+    }
+
     func applyFilter() {
         let q = search.stringValue.lowercased()
         filtered = q.isEmpty ? all : all.filter {
             $0.title.lowercased().contains(q) || $0.subtitle.lowercased().contains(q)
+                || contentMatches($0, q)
         }
         table.reloadData()
     }
@@ -273,7 +322,7 @@ leftStack.orientation = .vertical
 leftStack.spacing = 8
 leftStack.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 4)
 leftStack.translatesAutoresizingMaskIntoConstraints = false
-leftStack.widthAnchor.constraint(equalToConstant: 280).isActive = true
+leftStack.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
 
 // right pane: transcript
 controller.textView.isEditable = false
@@ -287,10 +336,14 @@ let textScroll = NSScrollView()
 textScroll.documentView = controller.textView
 textScroll.hasVerticalScroller = true
 
-let split = NSStackView(views: [leftStack, textScroll])
-split.orientation = .horizontal
-split.spacing = 0
-split.distribution = .fill
+let split = NSSplitView()
+split.isVertical = true
+split.dividerStyle = .thin
+split.addArrangedSubview(leftStack)
+split.addArrangedSubview(textScroll)
+textScroll.widthAnchor.constraint(greaterThanOrEqualToConstant: 320).isActive = true
+// sidebar keeps its width when the window resizes; divider stays draggable
+split.setHoldingPriority(NSLayoutConstraint.Priority(260), forSubviewAt: 0)
 window.contentView = split
 
 controller.reload(keepSelection: false)
@@ -300,5 +353,6 @@ if !controller.filtered.isEmpty {
 controller.startTimer()
 
 window.makeKeyAndOrderFront(nil)
+split.setPosition(280, ofDividerAt: 0)
 app.activate(ignoringOtherApps: true)
 app.run()
