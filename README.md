@@ -35,15 +35,34 @@ provider CLI). No LLM configured = you keep the timestamped raw transcript.
 
 ## Install
 
+### Homebrew (recommended)
+
+```sh
+brew install --HEAD monojitbanerjee/zaatar/zaatar
+zaatar setup    # interactive: LLM provider, calendar, models, permissions
+```
+
+`zaatar setup` walks through everything: pick your LLM (Claude CLI, fully
+local ollama, or any provider), your calendar (Google or Outlook), downloads
+the whisper models, installs the app bundles + background watcher, and
+starts the menu bar app. Re-run it anytime to change choices.
+
+```sh
+zaatar start my-meeting    # first run prompts for mic + system audio
+zaatar stop
+```
+
+### From a git checkout
+
 ```sh
 ./scripts/build.sh                       # compile + install app bundles
-mkdir -p ~/.config/zaatar
-cp config.example.sh ~/.config/zaatar/config   # edit to taste
-bin/rec start my-meeting                 # first run prompts for mic + system audio
+scripts/setup.sh                         # same interactive setup
+bin/rec start my-meeting
 bin/rec stop
 ```
 
-Calendar watcher (set `ZAATAR_CALENDAR_CMD` in the config first):
+Manual alternative to the wizard: `cp config.example.sh ~/.config/zaatar/config`
+and edit; calendar watcher:
 
 ```sh
 sed "s|__ZAATAR_DIR__|$(pwd)|" launchd/org.zaatar.meet-watch.plist \

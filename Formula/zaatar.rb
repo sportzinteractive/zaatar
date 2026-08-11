@@ -26,7 +26,7 @@ class Zaatar < Formula
     # Keep the repo layout intact in libexec (scripts resolve siblings
     # relatively), expose a single `zaatar` command on PATH.
     libexec.install Dir["*"]
-    (bin/"zaatar").write_exec_script libexec/"bin/zaatar"
+    bin.write_exec_script libexec/"bin/zaatar"
   end
 
   def caveats
