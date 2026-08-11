@@ -23,3 +23,9 @@
 # ZAATAR_MIC_GAIN_FLOOR="65"
 # ZAATAR_VAD_MIN_SPEECH="10"
 # ZAATAR_WAV_RETENTION_DAYS="14"
+
+# Pre-meeting brief: seconds before a meeting to generate a digest of prior
+# transcripts with the same attendees (0 = off). Your own name words
+# (lowercase) are excluded from attendee matching:
+# ZAATAR_BRIEF_LEAD="900"
+# ZAATAR_SELF_NAMES="jane doe jdoe"

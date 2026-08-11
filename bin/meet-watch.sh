@@ -79,6 +79,41 @@ else
   rm -f "$GUARD"
 fi
 
+# --- pre-meeting brief: for a Meet event starting within ZAATAR_BRIEF_LEAD
+# seconds, generate a digest of prior meetings with the same attendees ---
+if [ "${ZAATAR_BRIEF_LEAD:-0}" -gt 0 ]; then
+  UPCOMING="$(jq -r --arg now "$NOW_EPOCH" --arg lead "$ZAATAR_BRIEF_LEAD" '
+    def toepoch:
+      capture("(?<dt>[0-9-]+T[0-9:]{8})(\\.[0-9]+)?(?<tz>Z|(?<sign>[+-])(?<oh>[0-9]{2}):?(?<om>[0-9]{2}))$") as $c
+      | ($c.dt | strptime("%Y-%m-%dT%H:%M:%S") | mktime)
+        - (if $c.tz == "Z" then 0
+           else (if $c.sign == "+" then 1 else -1 end) * (($c.oh|tonumber)*3600 + ($c.om|tonumber)*60)
+           end);
+    [ .[]
+      | select(.conferenceData.conferenceSolution.key.type == "hangoutsMeet")
+      | select((.attendees // [] | map(select(.self == true and .responseStatus == "declined")) | length) == 0)
+      | select(.start.dateTime)
+      | (.start.dateTime | toepoch) as $s
+      | select(($now | tonumber) >= ($s - ($lead | tonumber)) and ($now | tonumber) < ($s - 180))
+      | {id: .id, summary: (.summary // "meeting"),
+         attendees: ([.attendees[]? | select(.resource != true) | (.displayName // .email)] | join(", "))}
+    ] | first // empty | @json' "$CACHE" 2>/dev/null || true)"
+  if [ -n "$UPCOMING" ] && [ -x "$BIN_DIR/brief.sh" ]; then
+    UP_ID="$(printf '%s' "$UPCOMING" | jq -r '.id')"
+    BRIEFED="$STATE_DIR/briefed-${UP_ID}"
+    if [ ! -f "$BRIEFED" ]; then
+      touch "$BRIEFED"
+      UP_TITLE="$(printf '%s' "$UPCOMING" | jq -r '.summary')"
+      UP_ATT="$(printf '%s' "$UPCOMING" | jq -r '.attendees // ""')"
+      if [ -n "$UP_ATT" ]; then
+        echo "$(date '+%F %T') BRIEF: generating for '$UP_TITLE'" >> "$STATE_DIR/meet-watch.log"
+        nohup "$BIN_DIR/brief.sh" --title "$UP_TITLE" --attendees "$UP_ATT" \
+          >> "$STATE_DIR/meet-watch.log" 2>&1 &
+      fi
+    fi
+  fi
+fi
+
 # --- find a Meet event active now (start-60s .. end), not declined by me ---
 ACTIVE="$(jq -r --arg now "$NOW_EPOCH" '
   # RFC3339 -> epoch; jq mktime is UTC-based so apply the numeric offset ourselves

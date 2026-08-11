@@ -218,6 +218,11 @@ if [[ "$BASE" =~ -meeting$ ]] && [ "$CLEAN_OK" = true ]; then
   fi
 fi
 
+# Commitment ledger: extract who-promised-what-by-when for the pre-meeting brief
+if [ "$CLEAN_OK" = true ]; then
+  "$BIN_DIR/commitments.sh" "$MD" || echo "WARN: commitment extraction failed (non-fatal)"
+fi
+
 echo "Done: $MD"
 echo "Raw:  $RAW_MD"
 osascript -e "display notification \"Transcript ready: ${BASE}\" with title \"Zaatar\"" 2>/dev/null || true

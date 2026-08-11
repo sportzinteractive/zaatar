@@ -55,8 +55,16 @@ ZAATAR_CONFIG="${ZAATAR_CONFIG:-$HOME/.config/zaatar/config}"
 # Delete wavs older than this many days once their transcript exists (0 = keep forever)
 : "${ZAATAR_WAV_RETENTION_DAYS:=14}"
 
+# Pre-meeting brief: seconds before a meeting to generate a digest of prior
+# transcripts with the same attendees (0 = disable). Needs calendar prompts.
+: "${ZAATAR_BRIEF_LEAD:=900}"
+
+# Your own name/email words (lowercase, space-separated) so prior-meeting
+# matching never matches on you. Example: "jane doe jdoe"
+: "${ZAATAR_SELF_NAMES:=}"
+
 export ZAATAR_REC_DIR ZAATAR_TRANSCRIPTS_DIR ZAATAR_STATE_DIR \
        ZAATAR_MODEL ZAATAR_LIVE_MODEL ZAATAR_CAP_BIN ZAATAR_LANGS \
        ZAATAR_CLEANUP_MODEL ZAATAR_QUESTIONS_INTERVAL ZAATAR_CALENDAR_CMD \
        ZAATAR_HF_TOKEN_FILE ZAATAR_MIC_GAIN_FLOOR ZAATAR_VAD_MIN_SPEECH \
-       ZAATAR_WAV_RETENTION_DAYS
+       ZAATAR_WAV_RETENTION_DAYS ZAATAR_BRIEF_LEAD ZAATAR_SELF_NAMES

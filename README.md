@@ -15,6 +15,8 @@ the `claude` CLI; you keep the timestamped raw transcript).
 - `bin/transcribe.sh` - whisper.cpp -> optional whisperx+pyannote diarization -> Claude cleanup (summary, key points, transcripts). VAD junk guard skips no-speech recordings.
 - `bin/meet-watch.sh` - calendar watcher (launchd, every 60s): floating start prompt at meeting start ("Join & Record" opens the Meet link), auto-stop 2 min after the event ends, wav retention.
 - `bin/live-transcribe.sh` - rough live transcript while recording (small model).
+- `bin/commitments.sh` - post-meeting pass: extracts who-promised-what-by-when into a running ledger (`ledger/commitments.md`, tick items off by hand).
+- `bin/brief.sh` - pre-meeting brief: ~15 min before a meeting, digests your prior transcripts with the same attendees + their open ledger commitments into a 60-second read, surfaced via the prompt panel.
 - `native/zaatarcap` - Swift capture CLI: mic + system audio via Core Audio process tap (macOS 14.2+), drift-corrected aggregate device, 16kHz mono wav. Falls back to mic-only.
 - `native/zaatarprompt` - floating non-activating prompt panel (Granola-style).
 - `native/zaatarviewer` - transcript browser with live view.
