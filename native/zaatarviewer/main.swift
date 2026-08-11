@@ -296,6 +296,28 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
 
+// Dock icon: white leaf on a green rounded rect (macOS icon shape)
+app.applicationIconImage = NSImage(size: NSSize(width: 512, height: 512), flipped: false) { rect in
+    let inset = rect.insetBy(dx: 51, dy: 51) // macOS icons use ~10% margin
+    let path = NSBezierPath(roundedRect: inset, xRadius: 92, yRadius: 92)
+    NSGradient(starting: NSColor(calibratedRed: 0.30, green: 0.62, blue: 0.36, alpha: 1),
+               ending: NSColor(calibratedRed: 0.16, green: 0.42, blue: 0.24, alpha: 1))?
+        .draw(in: path, angle: -90)
+    if let leaf = NSImage(systemSymbolName: "leaf.fill", accessibilityDescription: "Zaatar")?
+        .withSymbolConfiguration(.init(pointSize: 240, weight: .medium)) {
+        let tinted = NSImage(size: leaf.size, flipped: false) { r in
+            leaf.draw(in: r)
+            NSColor.white.set()
+            r.fill(using: .sourceAtop)
+            return true
+        }
+        let s = leaf.size
+        tinted.draw(in: NSRect(x: rect.midX - s.width / 2, y: rect.midY - s.height / 2,
+                               width: s.width, height: s.height))
+    }
+    return true
+}
+
 // minimal menu so Cmd+Q / Cmd+W / Cmd+C work
 let mainMenu = NSMenu()
 let appMenuItem = NSMenuItem()
