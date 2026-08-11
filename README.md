@@ -31,7 +31,7 @@ provider CLI). No LLM configured = you keep the timestamped raw transcript.
 - An LLM for cleanup/briefs (optional but recommended): [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) by default, or any provider/local model via `ZAATAR_LLM_CMD` (see config.example.sh)
 - Optional diarization: `pipx install whisperx`, Hugging Face token in `~/.cache/huggingface/token` with pyannote access
 - Optional VAD junk guard: `python3 -m venv vad/.venv && vad/.venv/bin/pip install -r vad/requirements.txt`
-- Optional calendar prompts: any CLI that prints Google-Calendar-style event JSON (e.g. gogcli: `gog calendar events --today -j --results-only`)
+- Optional calendar prompts: any CLI that prints Google-Calendar-style event JSON (see "Calendar integration" below)
 
 ## Install
 
@@ -52,6 +52,40 @@ launchctl load ~/Library/LaunchAgents/org.zaatar.meet-watch.plist
 ```
 
 Menu bar app: `open ~/Applications/ZaatarBar.app` (registers itself as a login item).
+
+## Calendar integration
+
+The watcher works with any meeting platform: Google Meet, Zoom, Microsoft
+Teams, and Webex links are detected from the event's video-conference field,
+location, or description. Recording itself is platform-independent (it
+captures mic + system audio at the OS level, so it works with any app).
+
+`ZAATAR_CALENDAR_CMD` is any command that prints today's events as a JSON
+array of Google-Calendar-shaped objects. Zaatar reads these fields:
+
+| Field | Used for |
+|---|---|
+| `id` | de-dup markers (prompted/briefed/auto-stop state) |
+| `summary` | recording name, prompt title |
+| `start.dateTime` / `end.dateTime` | RFC3339 with offset or `Z`; drives prompt timing and auto-stop |
+| `hangoutLink` | join URL (any video link works, despite the name) |
+| `conferenceData.entryPoints[]` | fallback join URL (`entryPointType: "video"`) |
+| `location`, `description` | scanned for Zoom/Teams/Webex/Meet URLs |
+| `attendees[].displayName` / `.email` / `.self` / `.responseStatus` / `.resource` | pre-meeting briefs, participants header |
+
+Only `id`, `summary`, `start`, and `end` are required; events without a
+detectable video link are ignored.
+
+Providers:
+
+- **Google Calendar** via [gogcli](https://github.com/steipete/gogcli):
+  `ZAATAR_CALENDAR_CMD="gog calendar events --today -j --results-only"`
+- **Outlook / Microsoft 365** via the bundled adapter (requires the
+  [Microsoft Graph CLI](https://learn.microsoft.com/en-us/graph/cli/installation),
+  authenticate once with `mgc login --scopes Calendars.Read`):
+  `ZAATAR_CALENDAR_CMD="/path/to/zaatar/scripts/outlook-calendar.sh"`
+- **Anything else**: emit the shape above from any source (ics parser,
+  CalDAV, EWS) and point `ZAATAR_CALENDAR_CMD` at it.
 
 ## Configuration
 

@@ -89,8 +89,14 @@ if [ "${ZAATAR_BRIEF_LEAD:-0}" -gt 0 ]; then
         - (if $c.tz == "Z" then 0
            else (if $c.sign == "+" then 1 else -1 end) * (($c.oh|tonumber)*3600 + ($c.om|tonumber)*60)
            end);
+  def joinurl:
+    (.hangoutLink // empty),
+    ([.conferenceData.entryPoints[]? | select(.entryPointType == "video") | .uri] | first // empty),
+    (((.location // "") + " " + (.description // ""))
+      | (try (capture("(?<u>https://[a-zA-Z0-9./?=_%:#&~+-]*(zoom\\.us/(j|my|s)/|teams\\.microsoft\\.com/l/meetup-join|teams\\.live\\.com/meet|webex\\.com/(meet|join)/)[a-zA-Z0-9./?=_%:#&~+-]*)").u) catch empty)),
+    "";
     [ .[]
-      | select(.conferenceData.conferenceSolution.key.type == "hangoutsMeet")
+      | select(first(joinurl) != "")
       | select((.attendees // [] | map(select(.self == true and .responseStatus == "declined")) | length) == 0)
       | select(.start.dateTime)
       | (.start.dateTime | toepoch) as $s
@@ -123,14 +129,20 @@ ACTIVE="$(jq -r --arg now "$NOW_EPOCH" '
       - (if $c.tz == "Z" then 0
          else (if $c.sign == "+" then 1 else -1 end) * (($c.oh|tonumber)*3600 + ($c.om|tonumber)*60)
          end);
+  def joinurl:
+    (.hangoutLink // empty),
+    ([.conferenceData.entryPoints[]? | select(.entryPointType == "video") | .uri] | first // empty),
+    (((.location // "") + " " + (.description // ""))
+      | (try (capture("(?<u>https://[a-zA-Z0-9./?=_%:#&~+-]*(zoom\\.us/(j|my|s)/|teams\\.microsoft\\.com/l/meetup-join|teams\\.live\\.com/meet|webex\\.com/(meet|join)/)[a-zA-Z0-9./?=_%:#&~+-]*)").u) catch empty)),
+    "";
   [ .[]
-    | select(.conferenceData.conferenceSolution.key.type == "hangoutsMeet")
+    | select(first(joinurl) != "")
     | select((.attendees // [] | map(select(.self == true and .responseStatus == "declined")) | length) == 0)
     | select(.start.dateTime)
     | (.start.dateTime | toepoch) as $s
     | (.end.dateTime   | toepoch) as $x
     | select(($now | tonumber) >= ($s - 60) and ($now | tonumber) < $x)
-    | {id: .id, summary: (.summary // "meeting"), start: $s, end: $x, meet: (.hangoutLink // ""),
+    | {id: .id, summary: (.summary // "meeting"), start: $s, end: $x, meet: first(joinurl),
        attendees: ([.attendees[]? | select(.resource != true) | (.displayName // .email)] | join(", "))}
   ] | first // empty | @json' "$CACHE" 2>/dev/null || true)"
 

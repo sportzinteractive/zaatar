@@ -14,8 +14,12 @@
 # ZAATAR_LANGS="Hinglish (mixed Hindi/English)"
 
 # Calendar integration (optional): a command printing today's events as a
-# Google-Calendar-style JSON array. Example using gogcli:
+# Google-Calendar-style JSON array (see README "Calendar integration" for the
+# contract). Meet/Zoom/Teams/Webex links are all detected. Examples:
+# Google Calendar via gogcli:
 # ZAATAR_CALENDAR_CMD="gog calendar events --today -j --results-only"
+# Outlook / Microsoft 365 via the bundled Graph adapter:
+# ZAATAR_CALENDAR_CMD="$HOME/path/to/zaatar/scripts/outlook-calendar.sh"
 
 # ZAATAR_CLEANUP_MODEL="sonnet"
 
