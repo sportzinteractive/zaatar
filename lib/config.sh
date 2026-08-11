@@ -29,6 +29,11 @@ ZAATAR_CONFIG="${ZAATAR_CONFIG:-$HOME/.config/zaatar/config}"
 # Claude CLI model for transcript cleanup (requires the `claude` CLI)
 : "${ZAATAR_CLEANUP_MODEL:=sonnet}"
 
+# Live question suggestions: while recording, periodically ask claude for 1-3
+# sharp questions based on the rough live transcript (shown in the viewer's
+# live view). Seconds between calls; 0 disables.
+: "${ZAATAR_QUESTIONS_INTERVAL:=90}"
+
 # Command that prints today's calendar events as a Google-Calendar-style JSON
 # array (fields used: id, summary, start.dateTime, end.dateTime, hangoutLink,
 # conferenceData.conferenceSolution.key.type, attendees[]). Leave empty to
@@ -52,5 +57,6 @@ ZAATAR_CONFIG="${ZAATAR_CONFIG:-$HOME/.config/zaatar/config}"
 
 export ZAATAR_REC_DIR ZAATAR_TRANSCRIPTS_DIR ZAATAR_STATE_DIR \
        ZAATAR_MODEL ZAATAR_LIVE_MODEL ZAATAR_CAP_BIN ZAATAR_LANGS \
-       ZAATAR_CLEANUP_MODEL ZAATAR_CALENDAR_CMD ZAATAR_HF_TOKEN_FILE \
-       ZAATAR_MIC_GAIN_FLOOR ZAATAR_VAD_MIN_SPEECH ZAATAR_WAV_RETENTION_DAYS
+       ZAATAR_CLEANUP_MODEL ZAATAR_QUESTIONS_INTERVAL ZAATAR_CALENDAR_CMD \
+       ZAATAR_HF_TOKEN_FILE ZAATAR_MIC_GAIN_FLOOR ZAATAR_VAD_MIN_SPEECH \
+       ZAATAR_WAV_RETENTION_DAYS

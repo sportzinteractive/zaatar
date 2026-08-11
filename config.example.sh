@@ -18,6 +18,8 @@
 # ZAATAR_CALENDAR_CMD="gog calendar events --today -j --results-only"
 
 # ZAATAR_CLEANUP_MODEL="sonnet"
+# Live question suggestions in the viewer (seconds between claude calls, 0 = off):
+# ZAATAR_QUESTIONS_INTERVAL="90"
 # ZAATAR_MIC_GAIN_FLOOR="65"
 # ZAATAR_VAD_MIN_SPEECH="10"
 # ZAATAR_WAV_RETENTION_DAYS="14"

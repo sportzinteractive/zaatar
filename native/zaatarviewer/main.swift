@@ -117,7 +117,7 @@ func inlineStyled(_ line: String, base: [NSAttributedString.Key: Any]) -> NSAttr
     return out
 }
 
-func styled(_ text: String, isLive: Bool) -> NSAttributedString {
+func styled(_ text: String, isLive: Bool, questions: [String] = []) -> NSAttributedString {
     let out = NSMutableAttributedString()
     let mono: [NSAttributedString.Key: Any] = [
         .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
@@ -129,6 +129,20 @@ func styled(_ text: String, isLive: Bool) -> NSAttributedString {
             attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .bold),
                          .foregroundColor: NSColor.systemOrange]))
         out.append(NSAttributedString(string: text, attributes: mono))
+        // AI question suggestions (live-questions.sh); rendered at the end so
+        // the live view's auto-scroll keeps them on screen
+        if !questions.isEmpty {
+            out.append(NSAttributedString(
+                string: "\nQUESTIONS YOU COULD ASK\n",
+                attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .bold),
+                             .foregroundColor: NSColor.systemTeal]))
+            for q in questions {
+                out.append(NSAttributedString(
+                    string: "\u{2022}  \(q)\n",
+                    attributes: [.font: NSFont.systemFont(ofSize: 13),
+                                 .foregroundColor: NSColor.systemTeal]))
+            }
+        }
         return out
     }
     let body: [NSAttributedString.Key: Any] = [
@@ -248,7 +262,18 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
         let content = (try? String(contentsOf: e.url, encoding: .utf8)) ?? ""
         let display = content.isEmpty && e.isLive
             ? "Waiting for the first live chunk (~30s of audio)..." : content
-        textView.textStorage?.setAttributedString(styled(display, isLive: e.isLive))
+        var questions: [String] = []
+        if e.isLive {
+            let qURL = stateDir.appendingPathComponent(
+                e.url.lastPathComponent
+                    .replacingOccurrences(of: "live-", with: "questions-"))
+            if let q = try? String(contentsOf: qURL, encoding: .utf8) {
+                questions = q.split(separator: "\n")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty && $0.lowercased() != "none" }
+            }
+        }
+        textView.textStorage?.setAttributedString(styled(display, isLive: e.isLive, questions: questions))
         if e.isLive || scrollToEnd { textView.scrollToEndOfDocument(nil) }
     }
 

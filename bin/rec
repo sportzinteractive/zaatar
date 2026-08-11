@@ -54,9 +54,15 @@ case "${1:-}" in
       # Rough live transcript (small model) for the viewer; final quality pass at stop
       LIVE_SH="$BIN_DIR/live-transcribe.sh"
       if [ -x "$LIVE_SH" ]; then
-        rm -f "$STATE_DIR"/live-*.txt
+        rm -f "$STATE_DIR"/live-*.txt "$STATE_DIR"/questions-*.txt
         nohup "$LIVE_SH" "$OUT" >/dev/null 2>"$STATE_DIR/live-transcribe.err" &
         echo $! > "$STATE_DIR/live.pid"
+        # AI question suggestions for the live view (reads the live transcript)
+        Q_SH="$BIN_DIR/live-questions.sh"
+        if [ -x "$Q_SH" ]; then
+          nohup "$Q_SH" "$OUT" >/dev/null 2>>"$STATE_DIR/live-questions.err" &
+          echo $! > "$STATE_DIR/questions.pid"
+        fi
       fi
       # Mic gain floor: browser AGC (e.g. Meet in Chrome) silently drags the
       # macOS input volume down, making the local speaker's voice too quiet
@@ -137,10 +143,14 @@ case "${1:-}" in
       sleep 1
     fi
     rm -f "$PID_FILE" "$META_FILE" "$SRC_FILE" "$OUT.level"
-    # stop the live-transcript loop (it also exits on its own when the recorder dies)
+    # stop the live-transcript + question loops (they also exit on their own when the recorder dies)
     if [ -f "$STATE_DIR/live.pid" ]; then
       kill "$(cat "$STATE_DIR/live.pid")" 2>/dev/null || true
       rm -f "$STATE_DIR/live.pid"
+    fi
+    if [ -f "$STATE_DIR/questions.pid" ]; then
+      kill "$(cat "$STATE_DIR/questions.pid")" 2>/dev/null || true
+      rm -f "$STATE_DIR/questions.pid"
     fi
     # Surface any other recorders still running (lost pid file)
     STRAYS="$(pgrep -f "(ffmpeg|zaatarcap) .*$REC_DIR" || true)"
