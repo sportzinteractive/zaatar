@@ -182,7 +182,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
-        setTitle("◎", nil)
+        setTitle("", nil)
         refresh()
         let timer = Timer(timeInterval: 3, repeats: true) { [weak self] _ in self?.refresh() }
         RunLoop.main.add(timer, forMode: .common)
@@ -202,6 +202,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func setTitle(_ text: String, _ color: NSColor?) {
         guard let button = statusItem.button else { return }
+        if button.image == nil,
+           let leaf = NSImage(systemSymbolName: "leaf.fill", accessibilityDescription: "Zaatar") {
+            leaf.isTemplate = true
+            button.image = leaf
+            button.imagePosition = .imageLeading
+        }
         var attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .regular)
         ]
@@ -212,9 +218,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func updateTitle() {
         if let r = snap.recording { setTitle("● \(r.elapsed / 60)m", .systemRed) }
         else if !snap.strays.isEmpty { setTitle("●!", .systemOrange) }
-        else if !snap.transcribing.isEmpty { setTitle("◎…", nil) }
-        else if !snap.failed.isEmpty { setTitle("◎!", .systemRed) }
-        else { setTitle("◎", nil) }
+        else if !snap.transcribing.isEmpty { setTitle("…", nil) }
+        else if !snap.failed.isEmpty { setTitle("!", .systemRed) }
+        else { setTitle("", nil) }
     }
 
     // MARK: Menu
