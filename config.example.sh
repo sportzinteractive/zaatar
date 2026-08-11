@@ -18,6 +18,15 @@
 # ZAATAR_CALENDAR_CMD="gog calendar events --today -j --results-only"
 
 # ZAATAR_CLEANUP_MODEL="sonnet"
+
+# Bring your own LLM (default: Claude CLI). A shell command template that
+# gets the instruction prompt in $ZAATAR_PROMPT, the content on stdin, and
+# prints the result to stdout. Examples:
+# fully local via ollama:
+# ZAATAR_LLM_CMD='{ printf "%s\n\n" "$ZAATAR_PROMPT"; cat; } | ollama run qwen2.5:14b'
+# any provider via simonw/llm:
+# ZAATAR_LLM_CMD='llm -s "$ZAATAR_PROMPT" -m gpt-4.1'
+# ZAATAR_LLM_CMD=""
 # Live question suggestions in the viewer (seconds between claude calls, 0 = off):
 # ZAATAR_QUESTIONS_INTERVAL="90"
 # ZAATAR_MIC_GAIN_FLOOR="65"

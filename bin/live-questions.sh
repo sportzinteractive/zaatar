@@ -24,7 +24,7 @@ MIN_NEW=400      # min new live-transcript bytes before another call
 CTX_BYTES=8000   # transcript tail sent as context
 
 [ "$INTERVAL" -gt 0 ] || exit 0
-command -v claude >/dev/null || exit 0
+zaatar_llm_available || exit 0
 
 recorder_alive() { pgrep -f "zaatarcap .*${BASE}\.wav" >/dev/null 2>&1; }
 
@@ -56,7 +56,7 @@ while recorder_alive; do
   ROSTER=""
   [ -s "$ATT_FILE" ] && ROSTER="Meeting participants: $(head -1 "$ATT_FILE")"$'\n\n'
   OUT="$( { printf '%s' "$ROSTER"; tail -c "$CTX_BYTES" "$LIVE"; } \
-    | env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude -p --model "$MODEL" "$QPROMPT" \
+    | zaatar_llm "$QPROMPT" \
       2>>"$STATE_DIR/live-questions.err" || true)"
   # keep the previous suggestions on NONE/empty (still the freshest good set)
   if [ -n "$OUT" ] && ! printf '%s\n' "$OUT" | head -1 | grep -qix 'none'; then

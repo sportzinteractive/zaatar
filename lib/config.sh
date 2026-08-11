@@ -26,8 +26,30 @@ ZAATAR_CONFIG="${ZAATAR_CONFIG:-$HOME/.config/zaatar/config}"
 # Examples: "English", "Hinglish (mixed Hindi/English)", "German and English"
 : "${ZAATAR_LANGS:=English}"
 
-# Claude CLI model for transcript cleanup (requires the `claude` CLI)
+# Claude CLI model for transcript cleanup (used by the default LLM provider)
 : "${ZAATAR_CLEANUP_MODEL:=sonnet}"
+
+# LLM provider override: a shell command template run via `bash -c`. It
+# receives the instruction prompt in $ZAATAR_PROMPT, the content on stdin,
+# and must print the result to stdout (nonzero exit = failure). Empty =
+# use the Claude CLI. Examples in config.example.sh (ollama, llm, etc).
+: "${ZAATAR_LLM_CMD:=}"
+
+# zaatar_llm "<prompt>" < content > result  - the single LLM entry point.
+zaatar_llm() {
+  if [ -n "$ZAATAR_LLM_CMD" ]; then
+    ZAATAR_PROMPT="$1" bash -c "$ZAATAR_LLM_CMD"
+  else
+    # env -u: a nested claude call inside a Claude Code session misbehaves
+    env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude -p --model "$ZAATAR_CLEANUP_MODEL" "$1"
+  fi
+}
+
+# True when an LLM is usable (custom command configured, or claude on PATH)
+zaatar_llm_available() {
+  if [ -n "$ZAATAR_LLM_CMD" ]; then return 0; fi
+  command -v claude >/dev/null 2>&1
+}
 
 # Live question suggestions: while recording, periodically ask claude for 1-3
 # sharp questions based on the rough live transcript (shown in the viewer's
@@ -67,4 +89,5 @@ export ZAATAR_REC_DIR ZAATAR_TRANSCRIPTS_DIR ZAATAR_STATE_DIR \
        ZAATAR_MODEL ZAATAR_LIVE_MODEL ZAATAR_CAP_BIN ZAATAR_LANGS \
        ZAATAR_CLEANUP_MODEL ZAATAR_QUESTIONS_INTERVAL ZAATAR_CALENDAR_CMD \
        ZAATAR_HF_TOKEN_FILE ZAATAR_MIC_GAIN_FLOOR ZAATAR_VAD_MIN_SPEECH \
-       ZAATAR_WAV_RETENTION_DAYS ZAATAR_BRIEF_LEAD ZAATAR_SELF_NAMES
+       ZAATAR_WAV_RETENTION_DAYS ZAATAR_BRIEF_LEAD ZAATAR_SELF_NAMES \
+       ZAATAR_LLM_CMD

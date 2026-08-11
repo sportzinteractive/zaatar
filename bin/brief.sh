@@ -146,10 +146,10 @@ PROMPT
 )"
 
 RC=0
-env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude -p --model "$ZAATAR_CLEANUP_MODEL" "$PROMPT" \
+zaatar_llm "$PROMPT" \
   < "$TMP/input.md" > "$TMP/brief.md" 2>"$TMP/claude.err" || RC=$?
 if [ "$RC" -ne 0 ] || [ ! -s "$TMP/brief.md" ]; then
-  echo "brief: claude failed (exit $RC)"; cat "$TMP/claude.err" 2>/dev/null || true; exit 1
+  echo "brief: LLM failed (exit $RC)"; cat "$TMP/claude.err" 2>/dev/null || true; exit 1
 fi
 
 {

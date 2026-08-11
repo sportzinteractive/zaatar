@@ -6,8 +6,9 @@ and produces clean meeting notes via the Claude CLI. Calendar-aware: prompts
 you when a Google Meet event starts, auto-stops when it ends.
 
 Everything runs on your machine. The only data that leaves it is the raw
-transcript text sent to the Claude API for cleanup (skip by not installing
-the `claude` CLI; you keep the timestamped raw transcript).
+transcript text sent to your configured LLM (Claude CLI by default; point
+`ZAATAR_LLM_CMD` at ollama for a fully local pipeline, or at any other
+provider CLI). No LLM configured = you keep the timestamped raw transcript.
 
 ## Components
 
@@ -27,7 +28,7 @@ the `claude` CLI; you keep the timestamped raw transcript).
 - macOS 14.2+ (system-audio process tap), Xcode CLT (`swiftc`)
 - `brew install ffmpeg jq whisper-cpp`
 - whisper models in `~/.local/share/whisper-models/`: `ggml-large-v3.bin` (final), `ggml-base.bin` (live) from [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp)
-- [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) for cleanup (optional but recommended)
+- An LLM for cleanup/briefs (optional but recommended): [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) by default, or any provider/local model via `ZAATAR_LLM_CMD` (see config.example.sh)
 - Optional diarization: `pipx install whisperx`, Hugging Face token in `~/.cache/huggingface/token` with pyannote access
 - Optional VAD junk guard: `python3 -m venv vad/.venv && vad/.venv/bin/pip install -r vad/requirements.txt`
 - Optional calendar prompts: any CLI that prints Google-Calendar-style event JSON (e.g. gogcli: `gog calendar events --today -j --results-only`)

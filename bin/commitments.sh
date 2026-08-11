@@ -53,10 +53,9 @@ PROMPT="${PROMPT//__MDATE__/$MDATE}"
 TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT
 RC=0
-env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude -p --model "$ZAATAR_CLEANUP_MODEL" "$PROMPT" \
-  < "$MD" > "$TMP" 2>/dev/null || RC=$?
+zaatar_llm "$PROMPT" < "$MD" > "$TMP" 2>/dev/null || RC=$?
 if [ "$RC" -ne 0 ] || [ ! -s "$TMP" ]; then
-  echo "commitments: claude extraction failed (exit $RC)"; exit 0
+  echo "commitments: LLM extraction failed (exit $RC)"; exit 0
 fi
 
 # Keep only well-formed ledger lines (model chatter / NONE filtered out)

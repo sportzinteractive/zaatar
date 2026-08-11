@@ -164,13 +164,13 @@ fi
 
 CLEAN_OK=false
 RC=0
-if command -v claude >/dev/null; then
+if zaatar_llm_available; then
   for ATTEMPT in 1 2; do
     RC=0
-    env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude -p --model "$ZAATAR_CLEANUP_MODEL" "$CLEANUP_PROMPT" \
+    zaatar_llm "$CLEANUP_PROMPT" \
       < "$RAW_MD" > "$TMP/clean.md" 2>"$TMP/claude.err" || RC=$?
     if [ "$RC" -eq 0 ] && [ -s "$TMP/clean.md" ]; then CLEAN_OK=true; break; fi
-    echo "WARN: Claude cleanup attempt $ATTEMPT failed (exit $RC)"
+    echo "WARN: LLM cleanup attempt $ATTEMPT failed (exit $RC)"
   done
 fi
 
@@ -182,7 +182,7 @@ if [ "$CLEAN_OK" = true ]; then
     echo "---"
     echo "- Source audio: ${AUDIO}"
     echo "- Raw transcript: ${RAW_MD}"
-    echo "- Processed: $(date '+%Y-%m-%d %H:%M') (local; diarized: ${DIARIZED_OK}; cleaned: claude ${ZAATAR_CLEANUP_MODEL})"
+    echo "- Processed: $(date '+%Y-%m-%d %H:%M') (local; diarized: ${DIARIZED_OK}; cleaned: ${ZAATAR_LLM_CMD:-claude ${ZAATAR_CLEANUP_MODEL}})"
   } > "$MD"
 else
   echo "WARN: Claude cleanup failed, using raw transcript as final output"
@@ -203,7 +203,7 @@ fi
 
 # Generic name ("meeting"): derive a real name from the transcript summary and rename
 if [[ "$BASE" =~ -meeting$ ]] && [ "$CLEAN_OK" = true ]; then
-  SLUG="$(head -40 "$MD" | env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT claude -p --model haiku \
+  SLUG="$(head -40 "$MD" | zaatar_llm \
     'Output ONLY a 2-5 word lowercase hyphenated slug naming this meeting based on the summary below. No other text.' \
     2>/dev/null | tail -1 | tr -cd 'a-z0-9-' | cut -c1-40 || true)"
   if [ -n "$SLUG" ] && [ "$SLUG" != "meeting" ]; then
