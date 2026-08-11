@@ -1,0 +1,33 @@
+#!/bin/bash
+# zaatar - single entry point (installed on PATH by the Homebrew formula).
+set -euo pipefail
+
+BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+usage() {
+  cat <<USAGE
+zaatar - local-first meeting recorder and transcriber
+
+Usage:
+  zaatar setup                interactive setup (LLM, calendar, models, apps)
+  zaatar start [name]         start recording
+  zaatar stop [--fast]        stop recording (transcription runs in background)
+  zaatar status               show recorder status
+  zaatar transcribe <wav>     (re)transcribe a recording
+  zaatar brief --title T --attendees "a@x,b@y"   generate a pre-meeting brief
+  zaatar help                 this text
+
+Config: ~/.config/zaatar/config (see 'zaatar setup')
+USAGE
+}
+
+case "${1:-help}" in
+  setup)      exec "$BIN_DIR/../scripts/setup.sh" ;;
+  start)      shift; exec "$BIN_DIR/rec" start "$@" ;;
+  stop)       shift; exec "$BIN_DIR/rec" stop "$@" ;;
+  status)     exec "$BIN_DIR/rec" status ;;
+  transcribe) shift; exec "$BIN_DIR/transcribe.sh" "$@" ;;
+  brief)      shift; exec "$BIN_DIR/brief.sh" "$@" ;;
+  help|-h|--help) usage ;;
+  *) usage; exit 1 ;;
+esac
