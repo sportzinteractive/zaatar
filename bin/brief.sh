@@ -55,7 +55,9 @@ while IFS= read -r A; do
     case "$SELF_NAMES" in *"$W"*) continue ;; esac
     TOKENS+=("$W"); NTOK=$((NTOK + 1))
   done
-done < <(printf '%s' "$ATTENDEES" | tr ',' '\n')
+# %s\n (not %s): without the trailing newline `read` drops the LAST attendee,
+# which for a 1:1 meant zero tokens and a silently skipped brief
+done < <(printf '%s\n' "$ATTENDEES" | tr ',' '\n')
 if [ "$NTOK" -eq 0 ]; then
   echo "brief: no usable attendee tokens (self-only meeting?)"; exit 0
 fi

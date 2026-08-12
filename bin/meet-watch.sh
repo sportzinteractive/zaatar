@@ -208,17 +208,23 @@ start_recording() {
   fi
 }
 
-touch "$PROMPTED"
 echo "$(date '+%F %T') PROMPT: '$EV_TITLE' -> $BTN" >> "$STATE_DIR/meet-watch.log"
 case "$BTN" in
   Skip)
+    touch "$PROMPTED"
     ;;
   "Record"|"Join & Record")
+    touch "$PROMPTED"
     start_recording
     ;;
   *)
-    # timed out / prompt unavailable: NOTIFY ONLY. Auto-recording meetings
+    # timed out / prompt unavailable: RE-OFFER each cycle until 10 min into the
+    # meeting (unanswered prompts silently lose meetings), then give up with a
+    # notification. Never auto-record on timeout: auto-recording meetings
     # nobody joined produces junk empty-room "transcripts".
-    notify "Not recording: $EV_TITLE (prompt unanswered; start from the menu bar to record)"
+    if [ "$NOW_EPOCH" -ge $(( EV_START + 600 )) ]; then
+      touch "$PROMPTED"
+      notify "Not recording: $EV_TITLE (prompt unanswered; start from the menu bar to record)"
+    fi
     ;;
 esac
