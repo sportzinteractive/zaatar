@@ -287,8 +287,8 @@ func styled(_ text: String, isLive: Bool, questions: [String] = []) -> NSAttribu
     }
     // editorial body: relaxed line height, quiet paragraph rhythm
     let bodyPS = NSMutableParagraphStyle()
-    bodyPS.lineHeightMultiple = 1.25
-    bodyPS.paragraphSpacing = 3
+    bodyPS.lineHeightMultiple = 1.3
+    bodyPS.paragraphSpacing = 5
     let body: [NSAttributedString.Key: Any] = [
         .font: NSFont.systemFont(ofSize: 13),
         .foregroundColor: NSColor.labelColor,
@@ -297,8 +297,8 @@ func styled(_ text: String, isLive: Bool, questions: [String] = []) -> NSAttribu
     // headers: tight tracking, air above, little below
     func header(_ size: CGFloat) -> [NSAttributedString.Key: Any] {
         let ps = NSMutableParagraphStyle()
-        ps.paragraphSpacingBefore = size >= 15 ? 16 : 10
-        ps.paragraphSpacing = 5
+        ps.paragraphSpacingBefore = size >= 15 ? 24 : 14
+        ps.paragraphSpacing = 6
         return [.font: NSFont.systemFont(ofSize: size, weight: .semibold),
                 .foregroundColor: NSColor.labelColor,
                 .kern: -0.2,
@@ -337,7 +337,21 @@ func styled(_ text: String, isLive: Bool, questions: [String] = []) -> NSAttribu
         }
         if line.hasPrefix("## ") {
             line = String(line.dropFirst(3)).replacingOccurrences(of: "**", with: "")
-            out.append(NSAttributedString(string: line + "\n", attributes: header(15)))
+            out.append(NSAttributedString(string: line + "\n", attributes: header(17)))
+            i += 1; continue
+        }
+        // transcript timestamp lines "**[00:02:15]**" -> quiet mono meta-line
+        if line.trimmingCharacters(in: .whitespaces).range(
+            of: #"^\*\*\[\d{1,2}:\d{2}(:\d{2})?\]\*\*$"#, options: .regularExpression) != nil {
+            let ts = line.trimmingCharacters(in: .whitespaces)
+                .replacingOccurrences(of: "**", with: "")
+            let ps = NSMutableParagraphStyle()
+            ps.paragraphSpacingBefore = 16
+            ps.paragraphSpacing = 3
+            out.append(NSAttributedString(string: ts + "\n", attributes: [
+                .font: NSFont.monospacedSystemFont(ofSize: 10.5, weight: .medium),
+                .foregroundColor: NSColor.tertiaryLabelColor,
+                .paragraphStyle: ps]))
             i += 1; continue
         }
         if line.hasPrefix("# ") {
@@ -705,6 +719,19 @@ textScroll.documentView = controller.textView
 textScroll.hasVerticalScroller = true
 // NSTextTable needs TextKit 1; touching layoutManager opts out of TextKit 2
 _ = controller.textView.layoutManager
+
+// centered reading column: cap the text measure at ~720pt, grow side insets beyond it
+func updateTextInsets() {
+    let w = textScroll.contentView.bounds.width
+    let side = max(26, (w - 720) / 2)
+    controller.textView.textContainerInset = NSSize(width: side, height: 24)
+}
+textScroll.contentView.postsFrameChangedNotifications = true
+NotificationCenter.default.addObserver(
+    forName: NSView.frameDidChangeNotification,
+    object: textScroll.contentView, queue: .main
+) { _ in updateTextInsets() }
+updateTextInsets()
 
 // right pane: tab bar (hidden for plain docs) above the transcript
 controller.segmented.target = controller
