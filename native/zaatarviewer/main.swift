@@ -450,6 +450,12 @@ func styled(_ text: String, isLive: Bool, questions: [String] = []) -> NSAttribu
                 restAttrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
             }
             out.append(inlineStyled(rest, base: restAttrs))
+            // quiet trailing delete affordance: removes the line from the file
+            var del = body
+            del[.link] = URL(string: "zaatar-delete://\(key)")!
+            del[.font] = NSFont.systemFont(ofSize: 11, weight: .medium)
+            del[.foregroundColor] = NSColor.tertiaryLabelColor
+            out.append(NSAttributedString(string: "  \u{00D7}", attributes: del))
             out.append(NSAttributedString(string: "\n", attributes: body))
             i += 1; continue
         }
@@ -513,6 +519,14 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
                 : lineText.replacingOccurrences(of: "- [x]", with: "- [ ]")
             content.replaceSubrange(r, with: toggled)
             try? content.write(to: sel, atomically: true, encoding: .utf8)
+        case "zaatar-delete":
+            // remove an irrelevant item from the file entirely
+            guard let lineText = checkboxLines[key], let sel = selectedURL,
+                  var content = try? String(contentsOf: sel, encoding: .utf8) else { return true }
+            if let r = content.range(of: lineText + "\n") ?? content.range(of: lineText) {
+                content.removeSubrange(r)
+                try? content.write(to: sel, atomically: true, encoding: .utf8)
+            }
         default:
             return false
         }
