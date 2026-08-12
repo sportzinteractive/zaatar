@@ -154,6 +154,10 @@ func tableCells(_ line: String) -> [String] {
     return inner.components(separatedBy: "|").map { $0.trimmingCharacters(in: .whitespaces) }
 }
 
+// long table cells (Evidence etc.) collapse to one line; click "more" to expand.
+// session-only state, keyed by cell-text hash.
+var expandedTableCells = Set<String>()
+
 func appendTable(_ rowLines: [String], to out: NSMutableAttributedString) {
     let rows = rowLines.filter { !isTableSeparator($0) }.map(tableCells)
     guard let cols = rows.map({ $0.count }).max(), cols > 0 else { return }
@@ -196,8 +200,27 @@ func appendTable(_ rowLines: [String], to out: NSMutableAttributedString) {
                     .foregroundColor: NSColor.labelColor,
                     .paragraphStyle: ps,
                 ]
-                out.append(inlineStyled(cell, base: attrs))
-                out.append(NSAttributedString(string: "\n", attributes: attrs))
+                let key = String(UInt(bitPattern: cell.hashValue))
+                let isLong = cell.count > 90
+                var linkAttrs = attrs
+                linkAttrs[.font] = NSFont.systemFont(ofSize: 11, weight: .medium)
+                linkAttrs[.foregroundColor] = NSColor.controlAccentColor
+                linkAttrs[.link] = URL(string: "zaatar-toggle://\(key)")!
+                if isLong && !expandedTableCells.contains(key) {
+                    let cut = String(cell.prefix(88))
+                        .trimmingCharacters(in: .whitespaces)
+                        .replacingOccurrences(of: "**", with: "")
+                    out.append(NSAttributedString(string: cut + "\u{2026} ", attributes: attrs))
+                    out.append(NSAttributedString(string: "more", attributes: linkAttrs))
+                    out.append(NSAttributedString(string: "\n", attributes: attrs))
+                } else {
+                    out.append(inlineStyled(cell, base: attrs))
+                    if isLong {
+                        out.append(NSAttributedString(string: " ", attributes: attrs))
+                        out.append(NSAttributedString(string: "less", attributes: linkAttrs))
+                    }
+                    out.append(NSAttributedString(string: "\n", attributes: attrs))
+                }
             }
         }
     }
@@ -412,7 +435,19 @@ enum Row {
     case entry(Entry)
 }
 
-final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSWindowDelegate {
+final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSWindowDelegate, NSTextViewDelegate {
+
+    // expand/collapse of truncated table cells (zaatar-toggle:// links)
+    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        guard let url = link as? URL, url.scheme == "zaatar-toggle" else { return false }
+        let key = url.host ?? ""
+        if expandedTableCells.contains(key) { expandedTableCells.remove(key) }
+        else { expandedTableCells.insert(key) }
+        let saved = textView.enclosingScrollView?.contentView.bounds.origin
+        showSelection(scrollToEnd: false)
+        if let o = saved { textView.scroll(o) }
+        return true
+    }
     // single-window app: closing the window quits (SwiftBar relaunches next time)
     func windowWillClose(_ notification: Notification) { NSApp.terminate(nil) }
 
@@ -727,6 +762,11 @@ leftStack.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = t
 // right pane: transcript
 controller.textView.isEditable = false
 controller.textView.isSelectable = true
+controller.textView.delegate = controller
+controller.textView.linkTextAttributes = [
+    .foregroundColor: NSColor.controlAccentColor,
+    .cursor: NSCursor.pointingHand,
+]
 controller.textView.textContainerInset = NSSize(width: 26, height: 20)
 controller.textView.autoresizingMask = [.width]
 controller.textView.isVerticallyResizable = true
