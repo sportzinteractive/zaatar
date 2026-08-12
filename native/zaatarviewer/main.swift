@@ -38,6 +38,7 @@ struct Entry {
     let url: URL
     let isLive: Bool
     let mtime: Date
+    var pinned: Bool = false
 }
 
 func humanTitle(from filename: String) -> (String, String) {
@@ -91,6 +92,36 @@ func loadEntries() -> [Entry] {
         }
     }
 
+    // Pinned: commitment ledger (action items extracted from every meeting)
+    let ledger = transcriptsDir.appendingPathComponent("ledger/commitments.md")
+    if let content = try? String(contentsOf: ledger, encoding: .utf8) {
+        let open = content.components(separatedBy: "\n").filter { $0.hasPrefix("- [ ]") }.count
+        entries.append(Entry(title: "Action Items", subtitle: "\(open) open \u{00b7} commitment ledger",
+                             url: ledger, isLive: false, mtime: .distantFuture, pinned: true))
+    }
+
+    // Pre-meeting briefs ("YYYY-MM-DD-slug-brief.md"), sorted in with transcripts
+    let briefsDir = transcriptsDir.appendingPathComponent("briefs")
+    if let files = try? fm.contentsOfDirectory(at: briefsDir, includingPropertiesForKeys: [.contentModificationDateKey]) {
+        for f in files where f.pathExtension == "md" {
+            var base = f.deletingPathExtension().lastPathComponent
+            if base.hasSuffix("-brief") { base = String(base.dropLast(6)) }
+            var name = base
+            var when = "pre-meeting brief"
+            let parts = base.split(separator: "-").map(String.init)
+            if parts.count > 3, parts[0].count == 4, Int(parts[0]) != nil {
+                let months = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+                let mon = Int(parts[1]).map { months[$0] } ?? parts[1]
+                let day = Int(parts[2]).map(String.init) ?? parts[2]
+                name = parts[3...].joined(separator: " ")
+                when = "\(day) \(mon) \u{00b7} pre-meeting brief"
+            }
+            let mtime = (try? f.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            entries.append(Entry(title: "Brief: \(name)", subtitle: when, url: f, isLive: false, mtime: mtime))
+        }
+    }
+
     if let files = try? fm.contentsOfDirectory(at: transcriptsDir, includingPropertiesForKeys: [.contentModificationDateKey]) {
         for f in files where f.pathExtension == "md" && !f.lastPathComponent.hasSuffix("-raw.md") {
             let (fallback, when) = humanTitle(from: f.lastPathComponent)
@@ -99,7 +130,11 @@ func loadEntries() -> [Entry] {
             entries.append(Entry(title: name, subtitle: when, url: f, isLive: false, mtime: mtime))
         }
     }
-    return entries.sorted { $0.mtime > $1.mtime }
+    return entries.sorted {
+        if $0.isLive != $1.isLive { return $0.isLive }
+        if $0.pinned != $1.pinned { return $0.pinned }
+        return $0.mtime > $1.mtime
+    }
 }
 
 // Inline markdown: **bold** runs become semibold, everything else keeps `base`.
@@ -176,6 +211,11 @@ func styled(_ text: String, isLive: Bool, questions: [String] = []) -> NSAttribu
             out.append(NSAttributedString(string: line + "\n", attributes: header(18)))
             continue
         }
+        // checkboxes (commitment ledger): "- [ ]" / "- [x]" -> box glyphs
+        line = line.replacingOccurrences(
+            of: #"^(\s*)- \[ \] "#, with: "$1\u{2610}  ", options: .regularExpression)
+        line = line.replacingOccurrences(
+            of: #"^(\s*)- \[[xX]\] "#, with: "$1\u{2611}  ", options: .regularExpression)
         // bullets: "- item" / "* item" (any indent) -> bullet glyph
         line = line.replacingOccurrences(
             of: #"^(\s*)[-*] (?=\S)"#, with: "$1\u{2022}  ", options: .regularExpression)
@@ -185,12 +225,17 @@ func styled(_ text: String, isLive: Bool, questions: [String] = []) -> NSAttribu
     return out
 }
 
+enum Row {
+    case header(String)
+    case entry(Entry)
+}
+
 final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSWindowDelegate {
     // single-window app: closing the window quits (SwiftBar relaunches next time)
     func windowWillClose(_ notification: Notification) { NSApp.terminate(nil) }
 
     var all: [Entry] = []
-    var filtered: [Entry] = []
+    var rows: [Row] = []
     let table = NSTableView()
     let textView = NSTextView()
     let search = NSSearchField()
@@ -203,9 +248,18 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
         all = loadEntries()
         contentCache.removeAll()
         applyFilter()
-        if keepSelection, let p = prev, let idx = filtered.firstIndex(where: { $0.url == p }) {
+        if keepSelection, let p = prev, let idx = rowIndex(of: p) {
             table.selectRowIndexes([idx], byExtendingSelection: false)
         }
+    }
+
+    func rowIndex(of url: URL) -> Int? {
+        rows.firstIndex { if case .entry(let e) = $0 { return e.url == url }; return false }
+    }
+
+    func entry(at row: Int) -> Entry? {
+        guard row >= 0, row < rows.count, case .entry(let e) = rows[row] else { return nil }
+        return e
     }
 
     // full-text: falls back to file contents when title/subtitle don't match
@@ -217,47 +271,109 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
         return c.contains(q)
     }
 
+    func section(for e: Entry) -> String {
+        if e.isLive { return "Live" }
+        if e.pinned { return "Pinned" }
+        if e.title.hasPrefix("Brief: ") { return "Pre-meeting briefs" }
+        let cal = Calendar.current
+        if cal.isDateInToday(e.mtime) { return "Today" }
+        if cal.isDateInYesterday(e.mtime) { return "Yesterday" }
+        let days = cal.dateComponents([.day], from: e.mtime, to: Date()).day ?? 999
+        if days < 7 { return "This week" }
+        if days < 31 { return "This month" }
+        return "Earlier"
+    }
+
     func applyFilter() {
         let q = search.stringValue.lowercased()
-        filtered = q.isEmpty ? all : all.filter {
+        let filtered = q.isEmpty ? all : all.filter {
             $0.title.lowercased().contains(q) || $0.subtitle.lowercased().contains(q)
                 || contentMatches($0, q)
+        }
+        rows = []
+        var current = ""
+        for e in filtered {
+            let sec = section(for: e)
+            if sec != current { rows.append(.header(sec)); current = sec }
+            rows.append(.entry(e))
         }
         table.reloadData()
     }
 
     func controlTextDidChange(_ obj: Notification) { applyFilter() }
 
-    func numberOfRows(in tableView: NSTableView) -> Int { filtered.count }
+    func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
 
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let e = filtered[row]
-        let cell = NSStackView()
-        cell.orientation = .vertical
-        cell.alignment = .leading
-        cell.spacing = 1
-        cell.edgeInsets = NSEdgeInsets(top: 4, left: 6, bottom: 4, right: 6)
-        let t = NSTextField(labelWithString: e.title)
-        t.font = .systemFont(ofSize: 13, weight: e.isLive ? .bold : .medium)
-        t.textColor = e.isLive ? .systemRed : .labelColor
-        t.lineBreakMode = .byTruncatingTail
-        let s = NSTextField(labelWithString: e.subtitle)
-        s.font = .systemFont(ofSize: 11)
-        s.textColor = .secondaryLabelColor
-        cell.addArrangedSubview(t)
-        cell.addArrangedSubview(s)
-        return cell
+    func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool {
+        if case .header = rows[row] { return true }
+        return false
     }
 
-    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { 42 }
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
+        if case .header = rows[row] { return false }
+        return true
+    }
+
+    func icon(for e: Entry) -> (String, NSColor) {
+        if e.isLive { return ("record.circle", .systemRed) }
+        if e.pinned { return ("checklist", .systemOrange) }
+        if e.title.hasPrefix("Brief: ") { return ("doc.badge.clock", .systemTeal) }
+        return ("text.bubble", .secondaryLabelColor)
+    }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        switch rows[row] {
+        case .header(let name):
+            let t = NSTextField(labelWithString: name.uppercased())
+            t.font = .systemFont(ofSize: 10, weight: .semibold)
+            t.textColor = .tertiaryLabelColor
+            let cell = NSStackView(views: [t])
+            cell.edgeInsets = NSEdgeInsets(top: 8, left: 6, bottom: 2, right: 6)
+            return cell
+        case .entry(let e):
+            var title = e.title
+            if title.hasPrefix("Brief: ") { title = String(title.dropFirst(7)) }
+            let (sym, tint) = icon(for: e)
+            let iv = NSImageView()
+            if let img = NSImage(systemSymbolName: sym, accessibilityDescription: nil) {
+                iv.image = img
+                iv.symbolConfiguration = .init(pointSize: 13, weight: .regular)
+                iv.contentTintColor = tint
+            }
+            iv.translatesAutoresizingMaskIntoConstraints = false
+            iv.widthAnchor.constraint(equalToConstant: 20).isActive = true
+            let t = NSTextField(labelWithString: title)
+            t.font = .systemFont(ofSize: 13, weight: e.isLive ? .bold : .medium)
+            t.textColor = e.isLive ? .systemRed : .labelColor
+            t.lineBreakMode = .byTruncatingTail
+            let s = NSTextField(labelWithString: e.subtitle)
+            s.font = .systemFont(ofSize: 11)
+            s.textColor = .secondaryLabelColor
+            s.lineBreakMode = .byTruncatingTail
+            let labels = NSStackView(views: [t, s])
+            labels.orientation = .vertical
+            labels.alignment = .leading
+            labels.spacing = 1
+            let cell = NSStackView(views: [iv, labels])
+            cell.orientation = .horizontal
+            cell.alignment = .centerY
+            cell.spacing = 4
+            cell.edgeInsets = NSEdgeInsets(top: 4, left: 4, bottom: 4, right: 6)
+            return cell
+        }
+    }
+
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        if case .header = rows[row] { return 24 }
+        return 44
+    }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         showSelection(scrollToEnd: false)
     }
 
     func showSelection(scrollToEnd: Bool) {
-        guard table.selectedRow >= 0, table.selectedRow < filtered.count else { return }
-        let e = filtered[table.selectedRow]
+        guard let e = entry(at: table.selectedRow) else { return }
         selectedURL = e.url
         let content = (try? String(contentsOf: e.url, encoding: .utf8)) ?? ""
         let display = content.isEmpty && e.isLive
@@ -273,8 +389,25 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
                     .filter { !$0.isEmpty && $0.lowercased() != "none" }
             }
         }
-        textView.textStorage?.setAttributedString(styled(display, isLive: e.isLive, questions: questions))
+        // reading-pane header: title + date (skip when the doc already opens with "# ")
+        let doc = NSMutableAttributedString()
+        if !e.isLive, !display.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("# ") {
+            var title = e.title
+            if title.hasPrefix("Brief: ") { title = String(title.dropFirst(7)) }
+            doc.append(NSAttributedString(string: title + "\n",
+                attributes: [.font: NSFont.systemFont(ofSize: 20, weight: .semibold),
+                             .foregroundColor: NSColor.labelColor]))
+            if !e.subtitle.isEmpty {
+                doc.append(NSAttributedString(string: e.subtitle + "\n",
+                    attributes: [.font: NSFont.systemFont(ofSize: 12),
+                                 .foregroundColor: NSColor.secondaryLabelColor]))
+            }
+            doc.append(NSAttributedString(string: "\n"))
+        }
+        doc.append(styled(display, isLive: e.isLive, questions: questions))
+        textView.textStorage?.setAttributedString(doc)
         if e.isLive || scrollToEnd { textView.scrollToEndOfDocument(nil) }
+        else { textView.scroll(.zero) }
     }
 
     func startTimer() {
@@ -283,8 +416,8 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
             let hadLive = self.all.contains { $0.isLive }
             self.reload()
             let hasLive = self.all.contains { $0.isLive }
-            if let sel = self.selectedURL,
-               let e = self.filtered.first(where: { $0.url == sel }), e.isLive {
+            if let sel = self.selectedURL, let idx = self.rowIndex(of: sel),
+               let e = self.entry(at: idx), e.isLive {
                 self.showSelection(scrollToEnd: true)
             } else if hadLive != hasLive {
                 self.table.reloadData()
@@ -348,7 +481,7 @@ window.delegate = controller
 window.center()
 
 // left pane: search + table
-controller.search.placeholderString = "Search meetings"
+controller.search.placeholderString = "Search meetings, briefs, action items"
 controller.search.delegate = controller
 
 let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("main"))
@@ -394,8 +527,8 @@ split.setHoldingPriority(NSLayoutConstraint.Priority(260), forSubviewAt: 0)
 window.contentView = split
 
 controller.reload(keepSelection: false)
-if !controller.filtered.isEmpty {
-    controller.table.selectRowIndexes([0], byExtendingSelection: false)
+if let first = controller.rows.firstIndex(where: { if case .entry = $0 { return true }; return false }) {
+    controller.table.selectRowIndexes([first], byExtendingSelection: false)
 }
 controller.startTimer()
 
