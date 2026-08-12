@@ -161,26 +161,44 @@ func appendTable(_ rowLines: [String], to out: NSMutableAttributedString) {
     table.numberOfColumns = cols
     table.collapsesBorders = true
     table.hidesEmptyCells = false
+    let lastRow = rows.count - 1
     for (r, row) in rows.enumerated() {
         for c in 0..<cols {
             let cell = c < row.count ? row[c] : ""
             let block = NSTextTableBlock(table: table, startingRow: r, rowSpan: 1,
                                          startingColumn: c, columnSpan: 1)
-            block.setBorderColor(NSColor.separatorColor)
-            block.setWidth(0.5, type: .absoluteValueType, for: .border)
-            block.setWidth(6, type: .absoluteValueType, for: .padding)
-            if r == 0 {
-                block.backgroundColor = NSColor.labelColor.withAlphaComponent(0.06)
+            // editorial style: horizontal hairlines only, no grid, no header fill
+            if r < lastRow {
+                block.setBorderColor(r == 0
+                    ? NSColor.separatorColor
+                    : NSColor.separatorColor.withAlphaComponent(0.5), for: .maxY)
+                block.setWidth(r == 0 ? 1 : 0.5, type: .absoluteValueType,
+                               for: .border, edge: .maxY)
             }
+            block.setWidth(0, type: .absoluteValueType, for: .padding)
+            block.setWidth(c == 0 ? 0 : 12, type: .absoluteValueType, for: .padding, edge: .minX)
+            block.setWidth(r == 0 ? 5 : 8, type: .absoluteValueType, for: .padding, edge: .minY)
+            block.setWidth(r == 0 ? 5 : 8, type: .absoluteValueType, for: .padding, edge: .maxY)
             let ps = NSMutableParagraphStyle()
             ps.textBlocks = [block]
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 12, weight: r == 0 ? .semibold : .regular),
-                .foregroundColor: NSColor.labelColor,
-                .paragraphStyle: ps,
-            ]
-            out.append(inlineStyled(cell, base: attrs))
-            out.append(NSAttributedString(string: "\n", attributes: attrs))
+            ps.lineHeightMultiple = 1.15
+            if r == 0 {
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.systemFont(ofSize: 10.5, weight: .semibold),
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                    .kern: 0.6,
+                    .paragraphStyle: ps,
+                ]
+                out.append(NSAttributedString(string: cell.uppercased() + "\n", attributes: attrs))
+            } else {
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: NSFont.systemFont(ofSize: 12),
+                    .foregroundColor: NSColor.labelColor,
+                    .paragraphStyle: ps,
+                ]
+                out.append(inlineStyled(cell, base: attrs))
+                out.append(NSAttributedString(string: "\n", attributes: attrs))
+            }
         }
     }
 }
