@@ -164,6 +164,10 @@ func tableCells(_ line: String) -> [String] {
 // session-only state, keyed by cell-text hash.
 var expandedTableCells = Set<String>()
 
+// clickable checkbox lines (commitment ledger): key -> original file line,
+// click toggles - [ ] / - [x] in the file itself
+var checkboxLines: [String: String] = [:]
+
 func appendTable(_ rowLines: [String], to out: NSMutableAttributedString) {
     let rows = rowLines.filter { !isTableSeparator($0) }.map(tableCells)
     guard let cols = rows.map({ $0.count }).max(), cols > 0 else { return }
@@ -428,6 +432,27 @@ func styled(_ text: String, isLive: Bool, questions: [String] = []) -> NSAttribu
                 .paragraphStyle: ps]))
             i += 1; continue
         }
+        // checkbox lines "- [ ] ..." -> click the box to mark done in the file
+        let cbLine = line.trimmingCharacters(in: .whitespaces)
+        if cbLine.hasPrefix("- [ ] ") || cbLine.hasPrefix("- [x] ") {
+            let done = cbLine.hasPrefix("- [x] ")
+            let rest = String(cbLine.dropFirst(6))
+            let key = String(UInt(bitPattern: line.hashValue))
+            checkboxLines[key] = line
+            var glyph = body
+            glyph[.link] = URL(string: "zaatar-check://\(key)")!
+            glyph[.font] = NSFont.systemFont(ofSize: 13, weight: .medium)
+            glyph[.foregroundColor] = done ? NSColor.tertiaryLabelColor : NSColor.controlAccentColor
+            out.append(NSAttributedString(string: done ? "\u{2611} " : "\u{2610} ", attributes: glyph))
+            var restAttrs = body
+            if done {
+                restAttrs[.foregroundColor] = NSColor.tertiaryLabelColor
+                restAttrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+            }
+            out.append(inlineStyled(rest, base: restAttrs))
+            out.append(NSAttributedString(string: "\n", attributes: body))
+            i += 1; continue
+        }
         if line.hasPrefix("# ") {
             line = String(line.dropFirst(2)).replacingOccurrences(of: "**", with: "")
             out.append(NSAttributedString(string: line + "\n", attributes: header(18)))
@@ -472,10 +497,25 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
 
     // expand/collapse of truncated table cells (zaatar-toggle:// links)
     func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
-        guard let url = link as? URL, url.scheme == "zaatar-toggle" else { return false }
+        guard let url = link as? URL else { return false }
         let key = url.host ?? ""
-        if expandedTableCells.contains(key) { expandedTableCells.remove(key) }
-        else { expandedTableCells.insert(key) }
+        switch url.scheme {
+        case "zaatar-toggle":
+            if expandedTableCells.contains(key) { expandedTableCells.remove(key) }
+            else { expandedTableCells.insert(key) }
+        case "zaatar-check":
+            // tick/untick the checkbox line in the underlying file
+            guard let lineText = checkboxLines[key], let sel = selectedURL,
+                  var content = try? String(contentsOf: sel, encoding: .utf8),
+                  let r = content.range(of: lineText) else { return true }
+            let toggled = lineText.contains("- [ ]")
+                ? lineText.replacingOccurrences(of: "- [ ]", with: "- [x]")
+                : lineText.replacingOccurrences(of: "- [x]", with: "- [ ]")
+            content.replaceSubrange(r, with: toggled)
+            try? content.write(to: sel, atomically: true, encoding: .utf8)
+        default:
+            return false
+        }
         let saved = textView.enclosingScrollView?.contentView.bounds.origin
         showSelection(scrollToEnd: false)
         if let o = saved { textView.scroll(o) }
