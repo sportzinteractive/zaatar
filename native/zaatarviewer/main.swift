@@ -532,6 +532,9 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
+        // the 5s refresh re-selects the same row (reload -> selectRowIndexes);
+        // re-rendering then would yank the scroll position back to the top
+        if let e = entry(at: table.selectedRow), !e.isLive, e.url == selectedURL { return }
         showSelection(scrollToEnd: false)
     }
 
