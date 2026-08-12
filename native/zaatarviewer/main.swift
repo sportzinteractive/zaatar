@@ -124,6 +124,12 @@ func loadEntries() -> [Entry] {
 
     if let files = try? fm.contentsOfDirectory(at: transcriptsDir, includingPropertiesForKeys: [.contentModificationDateKey]) {
         for f in files where f.pathExtension == "md" && !f.lastPathComponent.hasSuffix("-raw.md") {
+            // behavioral eval merges into its meeting's tabs; only list it
+            // standalone when the meeting doc is missing (orphan)
+            if f.lastPathComponent.hasSuffix("-behavioral.md") {
+                let mainPath = String(f.path.dropLast("-behavioral.md".count)) + ".md"
+                if fm.fileExists(atPath: mainPath) { continue }
+            }
             let (fallback, when) = humanTitle(from: f.lastPathComponent)
             let name = storedTitle(of: f) ?? fallback
             let mtime = (try? f.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
@@ -281,6 +287,33 @@ func buildTabs(_ content: String) -> [(String, String)] {
     }
     for (t, b) in rest { tabs.append((tabLabel(t), "## \(t)\n\(b)")) }
     return tabs.count >= 2 ? tabs : []
+}
+
+// Emotional-eval sibling (<name>-behavioral.md) merges into the meeting's own
+// tabs instead of being a separate sidebar entry. Reliability + Speaker Map
+// fold into one "Speakers" tab; long titles get short labels.
+func evalTabs(_ content: String) -> [(String, String)] {
+    let (_, secs) = splitSections(content)
+    guard !secs.isEmpty else { return [] }
+    var speakers: [String] = []
+    var tabs: [(String, String)] = []
+    for (t, b) in secs {
+        if t.hasPrefix("Reliability") || t.hasPrefix("Speaker Map") {
+            speakers.append("## \(t)\n\(b)")
+        } else if t.hasPrefix("Confidence") {
+            tabs.append(("Confidence", "## \(t)\n\(b)"))
+        } else if t.hasPrefix("Stress") {
+            tabs.append(("Moments", "## \(t)\n\(b)"))
+        } else if t.hasPrefix("Behavioral Evidence") {
+            tabs.append(("Evidence", "## \(t)\n\(b)"))
+        } else {
+            tabs.append((tabLabel(t), "## \(t)\n\(b)"))
+        }
+    }
+    if !speakers.isEmpty {
+        tabs.insert(("Speakers", speakers.joined(separator: "\n")), at: 0)
+    }
+    return tabs
 }
 
 // Inline markdown: **bold** runs become semibold, everything else keeps `base`.
@@ -625,6 +658,19 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
         }
         // tabbed reading pane: sectioned docs get a segmented control
         tabs = e.isLive ? [] : buildTabs(content)
+        // merge the emotional-eval sibling as extra tabs on the meeting entry
+        if !e.isLive, !e.url.lastPathComponent.hasSuffix("-behavioral.md") {
+            let behURL = URL(fileURLWithPath: String(e.url.path.dropLast(3)) + "-behavioral.md")
+            if let beh = try? String(contentsOf: behURL, encoding: .utf8) {
+                let extra = evalTabs(beh)
+                if !extra.isEmpty {
+                    if tabs.isEmpty { tabs = [("Notes", content)] }
+                    // the notes' short Behavioral Read is superseded by the full eval
+                    tabs.removeAll { $0.0 == "Behavioral Read" }
+                    tabs += extra
+                }
+            }
+        }
         if urlChanged {
             segmented.segmentCount = tabs.count
             for (idx, t) in tabs.enumerated() { segmented.setLabel(t.0, forSegment: idx) }
