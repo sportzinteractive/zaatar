@@ -830,6 +830,13 @@ let window = NSWindow(
     backing: .buffered, defer: false
 )
 window.title = "Zaatar"
+// leaf branding in the titlebar (document-icon slot, tinted green)
+window.representedURL = URL(fileURLWithPath: "/")
+if let leaf = NSImage(systemSymbolName: "leaf.fill", accessibilityDescription: "Zaatar")?
+    .withSymbolConfiguration(.init(pointSize: 14, weight: .medium)
+        .applying(.init(paletteColors: [.systemGreen]))) {
+    window.standardWindowButton(.documentIconButton)?.image = leaf
+}
 window.minSize = NSSize(width: 640, height: 400)
 window.isReleasedWhenClosed = false
 window.delegate = controller
