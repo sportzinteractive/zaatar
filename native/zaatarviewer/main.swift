@@ -137,6 +137,111 @@ func loadEntries() -> [Entry] {
     }
 }
 
+// --- markdown tables -> NSTextTable (real bordered layout in the text view) ---
+func isTableRow(_ line: String) -> Bool {
+    let t = line.trimmingCharacters(in: .whitespaces)
+    return t.count > 2 && t.hasPrefix("|") && t.hasSuffix("|")
+}
+
+func isTableSeparator(_ line: String) -> Bool {
+    guard isTableRow(line) else { return false }
+    let inner = line.trimmingCharacters(in: .whitespaces).dropFirst().dropLast()
+    return inner.contains("-") && inner.allSatisfy { "-:| ".contains($0) }
+}
+
+func tableCells(_ line: String) -> [String] {
+    let inner = line.trimmingCharacters(in: .whitespaces).dropFirst().dropLast()
+    return inner.components(separatedBy: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+}
+
+func appendTable(_ rowLines: [String], to out: NSMutableAttributedString) {
+    let rows = rowLines.filter { !isTableSeparator($0) }.map(tableCells)
+    guard let cols = rows.map({ $0.count }).max(), cols > 0 else { return }
+    let table = NSTextTable()
+    table.numberOfColumns = cols
+    table.collapsesBorders = true
+    table.hidesEmptyCells = false
+    for (r, row) in rows.enumerated() {
+        for c in 0..<cols {
+            let cell = c < row.count ? row[c] : ""
+            let block = NSTextTableBlock(table: table, startingRow: r, rowSpan: 1,
+                                         startingColumn: c, columnSpan: 1)
+            block.setBorderColor(NSColor.separatorColor)
+            block.setWidth(0.5, type: .absoluteValueType, for: .border)
+            block.setWidth(6, type: .absoluteValueType, for: .padding)
+            if r == 0 {
+                block.backgroundColor = NSColor.labelColor.withAlphaComponent(0.06)
+            }
+            let ps = NSMutableParagraphStyle()
+            ps.textBlocks = [block]
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 12, weight: r == 0 ? .semibold : .regular),
+                .foregroundColor: NSColor.labelColor,
+                .paragraphStyle: ps,
+            ]
+            out.append(inlineStyled(cell, base: attrs))
+            out.append(NSAttributedString(string: "\n", attributes: attrs))
+        }
+    }
+}
+
+// --- section split for the tabbed reading pane ---
+func splitSections(_ text: String) -> (preamble: String, sections: [(String, String)]) {
+    var pre: [String] = []
+    var sections: [(String, [String])] = []
+    for line in text.components(separatedBy: "\n") {
+        if line.hasPrefix("## ") {
+            let title = String(line.dropFirst(3)).replacingOccurrences(of: "**", with: "")
+                .trimmingCharacters(in: .whitespaces)
+            sections.append((title, []))
+        } else if sections.isEmpty {
+            pre.append(line)
+        } else {
+            sections[sections.count - 1].1.append(line)
+        }
+    }
+    return (pre.joined(separator: "\n"),
+            sections.map { ($0.0, $0.1.joined(separator: "\n")) })
+}
+
+func tabLabel(_ title: String) -> String {
+    if title.hasPrefix("Transcript") {
+        return title.contains("English") ? "English" : "Transcript"
+    }
+    var s = title
+    if let r = s.range(of: " (") { s = String(s[..<r.lowerBound]) }
+    if s.count > 20 { s = String(s.prefix(19)) + "\u{2026}" }
+    return s
+}
+
+// Tabs for docs with 2-8 "## " sections. Leading Summary / Key Points /
+// Reliability sections merge into a single Overview tab. Docs outside that
+// range (ledger with per-meeting headings, junk notes) render as plain scroll.
+func buildTabs(_ content: String) -> [(String, String)] {
+    let (pre, secs) = splitSections(content)
+    guard secs.count >= 2, secs.count <= 8 else { return [] }
+    let preClean = pre.components(separatedBy: "\n")
+        .filter { !$0.hasPrefix("# ") && !$0.hasPrefix("<!--") }
+        .joined(separator: "\n")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    var overview: [String] = []
+    var rest: [(String, String)] = []
+    for (t, b) in secs {
+        if rest.isEmpty, ["Summary", "Key Points", "Reliability"].contains(t) {
+            overview.append("## \(t)\n\(b)")
+        } else {
+            rest.append((t, b))
+        }
+    }
+    var tabs: [(String, String)] = []
+    let ovBody = (preClean.isEmpty ? "" : preClean + "\n\n") + overview.joined(separator: "\n")
+    if !ovBody.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        tabs.append(("Overview", ovBody))
+    }
+    for (t, b) in rest { tabs.append((tabLabel(t), "## \(t)\n\(b)")) }
+    return tabs.count >= 2 ? tabs : []
+}
+
 // Inline markdown: **bold** runs become semibold, everything else keeps `base`.
 func inlineStyled(_ line: String, base: [NSAttributedString.Key: Any]) -> NSAttributedString {
     let out = NSMutableAttributedString()
@@ -180,36 +285,80 @@ func styled(_ text: String, isLive: Bool, questions: [String] = []) -> NSAttribu
         }
         return out
     }
+    // editorial body: relaxed line height, quiet paragraph rhythm
+    let bodyPS = NSMutableParagraphStyle()
+    bodyPS.lineHeightMultiple = 1.25
+    bodyPS.paragraphSpacing = 3
     let body: [NSAttributedString.Key: Any] = [
         .font: NSFont.systemFont(ofSize: 13),
         .foregroundColor: NSColor.labelColor,
+        .paragraphStyle: bodyPS,
     ]
+    // headers: tight tracking, air above, little below
     func header(_ size: CGFloat) -> [NSAttributedString.Key: Any] {
-        [.font: NSFont.systemFont(ofSize: size, weight: .semibold),
-         .foregroundColor: NSColor.labelColor]
+        let ps = NSMutableParagraphStyle()
+        ps.paragraphSpacingBefore = size >= 15 ? 16 : 10
+        ps.paragraphSpacing = 5
+        return [.font: NSFont.systemFont(ofSize: size, weight: .semibold),
+                .foregroundColor: NSColor.labelColor,
+                .kern: -0.2,
+                .paragraphStyle: ps]
     }
     var inFence = false
-    for lineSub in text.components(separatedBy: "\n") {
-        var line = lineSub
-        if line.hasPrefix("```") { inFence.toggle(); continue }
+    let lines = text.components(separatedBy: "\n")
+    var i = 0
+    while i < lines.count {
+        var line = lines[i]
+        if line.hasPrefix("```") { inFence.toggle(); i += 1; continue }
         if inFence {
             out.append(NSAttributedString(string: line + "\n", attributes: mono))
+            i += 1; continue
+        }
+        // HTML comments (zaatar-title marker) and horizontal rules: skip
+        if line.hasPrefix("<!--") { i += 1; continue }
+        if line.trimmingCharacters(in: .whitespaces) == "---" { i += 1; continue }
+        // markdown table: header row + separator row -> NSTextTable
+        if isTableRow(line), i + 1 < lines.count, isTableSeparator(lines[i + 1]) {
+            var block: [String] = []
+            while i < lines.count, isTableRow(lines[i]) { block.append(lines[i]); i += 1 }
+            appendTable(block, to: out)
+            out.append(NSAttributedString(string: "\n", attributes: body))
             continue
+        }
+        if line.hasPrefix("#### ") {
+            line = String(line.dropFirst(5)).replacingOccurrences(of: "**", with: "")
+            out.append(NSAttributedString(string: line + "\n", attributes: header(12)))
+            i += 1; continue
         }
         if line.hasPrefix("### ") {
             line = String(line.dropFirst(4)).replacingOccurrences(of: "**", with: "")
             out.append(NSAttributedString(string: line + "\n", attributes: header(13)))
-            continue
+            i += 1; continue
         }
         if line.hasPrefix("## ") {
             line = String(line.dropFirst(3)).replacingOccurrences(of: "**", with: "")
             out.append(NSAttributedString(string: line + "\n", attributes: header(15)))
-            continue
+            i += 1; continue
         }
         if line.hasPrefix("# ") {
             line = String(line.dropFirst(2)).replacingOccurrences(of: "**", with: "")
             out.append(NSAttributedString(string: line + "\n", attributes: header(18)))
-            continue
+            i += 1; continue
+        }
+        // blockquote: indented, secondary color
+        if line.hasPrefix(">") {
+            let inner = line.hasPrefix("> ") ? String(line.dropFirst(2)) : String(line.dropFirst(1))
+            let ps = NSMutableParagraphStyle()
+            ps.headIndent = 16
+            ps.firstLineHeadIndent = 16
+            ps.lineHeightMultiple = 1.25
+            ps.paragraphSpacing = 3
+            var q = body
+            q[.foregroundColor] = NSColor.secondaryLabelColor
+            q[.paragraphStyle] = ps
+            out.append(inlineStyled(inner, base: q))
+            out.append(NSAttributedString(string: "\n", attributes: q))
+            i += 1; continue
         }
         // checkboxes (commitment ledger): "- [ ]" / "- [x]" -> box glyphs
         line = line.replacingOccurrences(
@@ -221,6 +370,7 @@ func styled(_ text: String, isLive: Bool, questions: [String] = []) -> NSAttribu
             of: #"^(\s*)[-*] (?=\S)"#, with: "$1\u{2022}  ", options: .regularExpression)
         out.append(inlineStyled(line, base: body))
         out.append(NSAttributedString(string: "\n", attributes: body))
+        i += 1
     }
     return out
 }
@@ -239,9 +389,22 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
     let table = NSTableView()
     let textView = NSTextView()
     let search = NSSearchField()
+    let segmented = NSSegmentedControl()
+    var tabs: [(String, String)] = []
+    var scrollTopWithTabs: NSLayoutConstraint?
+    var scrollTopNoTabs: NSLayoutConstraint?
     var timer: Timer?
     var selectedURL: URL?
     var contentCache: [URL: String] = [:]
+
+    func setTabsVisible(_ visible: Bool) {
+        segmented.isHidden = !visible
+        scrollTopWithTabs?.isActive = false
+        scrollTopNoTabs?.isActive = false
+        (visible ? scrollTopWithTabs : scrollTopNoTabs)?.isActive = true
+    }
+
+    @objc func tabChanged() { showSelection(scrollToEnd: false) }
 
     func reload(keepSelection: Bool = true) {
         let prev = selectedURL
@@ -374,6 +537,7 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
 
     func showSelection(scrollToEnd: Bool) {
         guard let e = entry(at: table.selectedRow) else { return }
+        let urlChanged = selectedURL != e.url
         selectedURL = e.url
         let content = (try? String(contentsOf: e.url, encoding: .utf8)) ?? ""
         let display = content.isEmpty && e.isLive
@@ -389,14 +553,28 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
                     .filter { !$0.isEmpty && $0.lowercased() != "none" }
             }
         }
-        // reading-pane header: title + date (skip when the doc already opens with "# ")
+        // tabbed reading pane: sectioned docs get a segmented control
+        tabs = e.isLive ? [] : buildTabs(content)
+        if urlChanged {
+            segmented.segmentCount = tabs.count
+            for (idx, t) in tabs.enumerated() { segmented.setLabel(t.0, forSegment: idx) }
+            if !tabs.isEmpty { segmented.selectedSegment = 0 }
+        }
+        setTabsVisible(tabs.count >= 2)
+        // reading-pane header: title + date (tabbed docs always get one; plain
+        // docs only when they don't already open with "# ")
         let doc = NSMutableAttributedString()
-        if !e.isLive, !display.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("# ") {
+        let opensWithTitle = display.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("# ")
+        if !e.isLive, !tabs.isEmpty || !opensWithTitle {
             var title = e.title
             if title.hasPrefix("Brief: ") { title = String(title.dropFirst(7)) }
+            let titlePS = NSMutableParagraphStyle()
+            titlePS.paragraphSpacing = 3
             doc.append(NSAttributedString(string: title + "\n",
-                attributes: [.font: NSFont.systemFont(ofSize: 20, weight: .semibold),
-                             .foregroundColor: NSColor.labelColor]))
+                attributes: [.font: NSFont.systemFont(ofSize: 22, weight: .semibold),
+                             .foregroundColor: NSColor.labelColor,
+                             .kern: -0.4,
+                             .paragraphStyle: titlePS]))
             if !e.subtitle.isEmpty {
                 doc.append(NSAttributedString(string: e.subtitle + "\n",
                     attributes: [.font: NSFont.systemFont(ofSize: 12),
@@ -404,7 +582,14 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
             }
             doc.append(NSAttributedString(string: "\n"))
         }
-        doc.append(styled(display, isLive: e.isLive, questions: questions))
+        let bodyText: String
+        if tabs.isEmpty {
+            bodyText = display
+        } else {
+            let sel = max(0, min(segmented.selectedSegment, tabs.count - 1))
+            bodyText = tabs[sel].1
+        }
+        doc.append(styled(bodyText, isLive: e.isLive, questions: questions))
         textView.textStorage?.setAttributedString(doc)
         if e.isLive || scrollToEnd { textView.scrollToEndOfDocument(nil) }
         else { textView.scroll(.zero) }
@@ -507,7 +692,7 @@ leftStack.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = t
 // right pane: transcript
 controller.textView.isEditable = false
 controller.textView.isSelectable = true
-controller.textView.textContainerInset = NSSize(width: 18, height: 16)
+controller.textView.textContainerInset = NSSize(width: 26, height: 20)
 controller.textView.autoresizingMask = [.width]
 controller.textView.isVerticallyResizable = true
 controller.textView.textContainer?.widthTracksTextView = true
@@ -515,13 +700,39 @@ controller.textView.textContainer?.widthTracksTextView = true
 let textScroll = NSScrollView()
 textScroll.documentView = controller.textView
 textScroll.hasVerticalScroller = true
+// NSTextTable needs TextKit 1; touching layoutManager opts out of TextKit 2
+_ = controller.textView.layoutManager
+
+// right pane: tab bar (hidden for plain docs) above the transcript
+controller.segmented.target = controller
+controller.segmented.action = #selector(ViewerController.tabChanged)
+controller.segmented.segmentStyle = .automatic
+controller.segmented.isHidden = true
+
+let rightPane = NSView()
+controller.segmented.translatesAutoresizingMaskIntoConstraints = false
+textScroll.translatesAutoresizingMaskIntoConstraints = false
+rightPane.addSubview(controller.segmented)
+rightPane.addSubview(textScroll)
+controller.scrollTopWithTabs = textScroll.topAnchor.constraint(
+    equalTo: controller.segmented.bottomAnchor, constant: 8)
+controller.scrollTopNoTabs = textScroll.topAnchor.constraint(equalTo: rightPane.topAnchor)
+NSLayoutConstraint.activate([
+    controller.segmented.topAnchor.constraint(equalTo: rightPane.topAnchor, constant: 10),
+    controller.segmented.leadingAnchor.constraint(equalTo: rightPane.leadingAnchor, constant: 16),
+    controller.segmented.trailingAnchor.constraint(lessThanOrEqualTo: rightPane.trailingAnchor, constant: -16),
+    textScroll.leadingAnchor.constraint(equalTo: rightPane.leadingAnchor),
+    textScroll.trailingAnchor.constraint(equalTo: rightPane.trailingAnchor),
+    textScroll.bottomAnchor.constraint(equalTo: rightPane.bottomAnchor),
+    controller.scrollTopNoTabs!,
+])
 
 let split = NSSplitView()
 split.isVertical = true
 split.dividerStyle = .thin
 split.addArrangedSubview(leftStack)
-split.addArrangedSubview(textScroll)
-textScroll.widthAnchor.constraint(greaterThanOrEqualToConstant: 320).isActive = true
+split.addArrangedSubview(rightPane)
+rightPane.widthAnchor.constraint(greaterThanOrEqualToConstant: 320).isActive = true
 // sidebar keeps its width when the window resizes; divider stays draggable
 split.setHoldingPriority(NSLayoutConstraint.Priority(260), forSubviewAt: 0)
 window.contentView = split
