@@ -35,21 +35,32 @@ provider CLI). No LLM configured = you keep the timestamped raw transcript.
 
 ## Install
 
-### Homebrew (recommended)
+### One-line install (recommended)
 
 ```sh
-brew install --HEAD monojitbanerjee/zaatar/zaatar
-zaatar setup    # interactive: LLM provider, calendar, models, permissions
+curl -fsSL https://raw.githubusercontent.com/monojitbanerjee/zaatar/main/scripts/install.sh | bash
 ```
 
-`zaatar setup` walks through everything: pick your LLM (Claude CLI, fully
-local ollama, or any provider), your calendar (Google or Outlook), downloads
-the whisper models, installs the app bundles + background watcher, and
-starts the menu bar app. Re-run it anytime to change choices.
+Installs dependencies, compiles the native apps, downloads whisper models,
+and walks through an interactive setup (LLM provider, calendar, permissions).
+Takes about 5 minutes. Re-run to update.
 
 ```sh
 zaatar start my-meeting    # first run prompts for mic + system audio
 zaatar stop
+```
+
+### Download the app
+
+Grab `Zaatar.dmg` from [Releases](https://github.com/monojitbanerjee/zaatar/releases),
+drag Zaatar to Applications, and launch. The app walks you through setup on
+first run (opens a Terminal window for dependency installation).
+
+### Homebrew
+
+```sh
+brew install --HEAD monojitbanerjee/zaatar/zaatar
+zaatar setup
 ```
 
 ### From a git checkout
@@ -98,7 +109,7 @@ detectable video link are ignored.
 Providers:
 
 - **Google Calendar** via [gogcli](https://github.com/steipete/gogcli):
-  `ZAATAR_CALENDAR_CMD="gog calendar events --today -j --results-only"`
+  `ZAATAR_CALENDAR_CMD="gog calendar events --today --max 50 -j --results-only"`
 - **Outlook / Microsoft 365** via the bundled adapter (requires the
   [Microsoft Graph CLI](https://learn.microsoft.com/en-us/graph/cli/installation),
   authenticate once with `mgc login --scopes Calendars.Read`):
