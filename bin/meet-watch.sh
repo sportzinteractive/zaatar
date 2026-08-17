@@ -47,9 +47,14 @@ if [ ! -f "$CACHE" ] || [ $(( NOW_EPOCH - $(stat -f %m "$CACHE") )) -gt $CACHE_T
   done
   if [ "$FETCH_OK" = true ]; then
     mv "$CACHE.tmp" "$CACHE"
+    rm -f "$STATE_DIR/cal-fail-count"
   else
     rm -f "$CACHE.tmp"
-    echo "$(date '+%F %T') WARN: calendar fetch failed" >> "$STATE_DIR/meet-watch.log"
+    # consecutive-failure counter: zaatarbar shows a visible degraded state
+    # after 3 (silent stale-cache mode is otherwise invisible)
+    N=$(( $(cat "$STATE_DIR/cal-fail-count" 2>/dev/null || echo 0) + 1 ))
+    echo "$N" > "$STATE_DIR/cal-fail-count"
+    echo "$(date '+%F %T') WARN: calendar fetch failed ($N consecutive)" >> "$STATE_DIR/meet-watch.log"
     # Flaky network must not kill stop prompts: fall back to stale cache if we have one
     if [ ! -f "$CACHE" ]; then exit 0; fi
     echo "$(date '+%F %T') INFO: using stale events cache" >> "$STATE_DIR/meet-watch.log"
@@ -69,14 +74,46 @@ if recording; then
     HRS=$(( R_ELAPSED / 3600 )); MINS=$(( (R_ELAPSED % 3600) / 60 ))
     BTN="$("$ZPROMPT" --title "Still in a meeting?" --subtitle "Recording for ${HRS}h ${MINS}m" \
       --primary "Stop (fast)" --button "Stop (full)" --button "Keep recording" --timeout 55 2>/dev/null || echo "gave up")"
+    echo "$(date '+%F %T') GUARD: recording ${HRS}h${MINS}m -> $BTN" >> "$STATE_DIR/meet-watch.log"
     case "$BTN" in
-      "Stop (fast)") "$REC" stop --fast >>"$STATE_DIR/meet-watch.log" 2>&1; rm -f "$STATE_DIR/meet-watch.active" "$GUARD"; exit 0 ;;
-      "Stop (full)") "$REC" stop >>"$STATE_DIR/meet-watch.log" 2>&1; rm -f "$STATE_DIR/meet-watch.active" "$GUARD"; exit 0 ;;
-      *) : ;;  # keep or timed out; re-ask in 30 min
+      "Stop (fast)") "$REC" stop --fast >>"$STATE_DIR/meet-watch.log" 2>&1; rm -f "$STATE_DIR/meet-watch.active" "$GUARD" "$STATE_DIR/guard-timeouts"; exit 0 ;;
+      "Stop (full)") "$REC" stop >>"$STATE_DIR/meet-watch.log" 2>&1; rm -f "$STATE_DIR/meet-watch.active" "$GUARD" "$STATE_DIR/guard-timeouts"; exit 0 ;;
+      "Keep recording") rm -f "$STATE_DIR/guard-timeouts" ;;  # explicit choice: re-ask in 30 min
+      *)
+        # Unanswered prompt = probably not at the machine. Two in a row
+        # (>1h unattended past the 2h mark) auto-stops: a forgotten manual
+        # recording can otherwise run all night.
+        GT=$(( $(cat "$STATE_DIR/guard-timeouts" 2>/dev/null || echo 0) + 1 ))
+        echo "$GT" > "$STATE_DIR/guard-timeouts"
+        if [ "$GT" -ge 2 ]; then
+          echo "$(date '+%F %T') GUARD: $GT unanswered prompts, auto-stopping" >> "$STATE_DIR/meet-watch.log"
+          "$REC" stop --fast >>"$STATE_DIR/meet-watch.log" 2>&1
+          rm -f "$STATE_DIR/meet-watch.active" "$GUARD" "$STATE_DIR/guard-timeouts"
+          exit 0
+        fi
+        ;;
     esac
   fi
 else
-  rm -f "$GUARD"
+  rm -f "$GUARD" "$STATE_DIR/guard-timeouts"
+fi
+
+# --- cleanup-retry sweep: transcripts that fell back to raw (rate limit etc)
+# leave a cleanup-pending-<base> marker; redo the LLM cleanup, one at a
+# time, at most every 30 min, and never while a transcription is running ---
+if ! pgrep -f '[t]ranscribe.sh' >/dev/null; then
+  PENDING="$(ls "$STATE_DIR"/cleanup-pending-* 2>/dev/null | head -1 || true)"
+  if [ -n "$PENDING" ]; then
+    LAST_RETRY=0
+    [ -f "$STATE_DIR/cleanup-retry-ts" ] && LAST_RETRY="$(stat -f %m "$STATE_DIR/cleanup-retry-ts")"
+    if [ $(( NOW_EPOCH - LAST_RETRY )) -ge 1800 ]; then
+      touch "$STATE_DIR/cleanup-retry-ts"
+      PBASE="$(basename "$PENDING")"; PBASE="${PBASE#cleanup-pending-}"
+      echo "$(date '+%F %T') INFO: retrying LLM cleanup for $PBASE" >> "$STATE_DIR/meet-watch.log"
+      nohup "$BIN_DIR/transcribe.sh" --redo-cleanup \
+        "$ZAATAR_REC_DIR/${PBASE}.wav" >>"$STATE_DIR/transcribe-${PBASE}.log" 2>&1 &
+    fi
+  fi
 fi
 
 # --- pre-meeting brief: for a Meet event starting within ZAATAR_BRIEF_LEAD
@@ -102,7 +139,8 @@ if [ "${ZAATAR_BRIEF_LEAD:-0}" -gt 0 ]; then
       | (.start.dateTime | toepoch) as $s
       | select(($now | tonumber) >= ($s - ($lead | tonumber)) and ($now | tonumber) < ($s - 180))
       | {id: .id, summary: (.summary // "meeting"),
-         attendees: ([.attendees[]? | select(.resource != true) | (.displayName // .email)] | join(", "))}
+         attendees: ([.attendees[]? | select(.resource != true) | (.displayName // .email)] | join(", ")),
+         attachments: [.attachments[]? | {title, fileId, mimeType}]}
     ] | first // empty | @json' "$CACHE" 2>/dev/null || true)"
   if [ -n "$UPCOMING" ] && [ -x "$BIN_DIR/brief.sh" ]; then
     UP_ID="$(printf '%s' "$UPCOMING" | jq -r '.id')"
@@ -113,7 +151,14 @@ if [ "${ZAATAR_BRIEF_LEAD:-0}" -gt 0 ]; then
       UP_ATT="$(printf '%s' "$UPCOMING" | jq -r '.attendees // ""')"
       if [ -n "$UP_ATT" ]; then
         echo "$(date '+%F %T') BRIEF: generating for '$UP_TITLE'" >> "$STATE_DIR/meet-watch.log"
-        nohup "$BIN_DIR/brief.sh" --title "$UP_TITLE" --attendees "$UP_ATT" \
+        # Deterministic output path + pointer file so the START prompt can offer
+        # "Read brief" (own 45s panel timed out unseen - one panel, one moment)
+        UP_SLUG="$(printf '%s' "$UP_TITLE" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-|-$//g' | cut -c1-40)"
+        BRIEF_OUT="$ZAATAR_TRANSCRIPTS_DIR/briefs/$(date +%F)-${UP_SLUG:-meeting}-brief.md"
+        printf '%s\n' "$BRIEF_OUT" > "$STATE_DIR/brief-path-${UP_ID}"
+        UP_ATTACH="$(printf '%s' "$UPCOMING" | jq -c '.attachments // []')"
+        nohup "$BIN_DIR/brief.sh" --title "$UP_TITLE" --attendees "$UP_ATT" --out "$BRIEF_OUT" \
+          --attachments-json "$UP_ATTACH" --no-prompt \
           >> "$STATE_DIR/meet-watch.log" 2>&1 &
       fi
     fi
@@ -121,7 +166,7 @@ if [ "${ZAATAR_BRIEF_LEAD:-0}" -gt 0 ]; then
 fi
 
 # --- find a Meet event active now (start-60s .. end), not declined by me ---
-ACTIVE="$(jq -r --arg now "$NOW_EPOCH" '
+CANDIDATES="$(jq -r --arg now "$NOW_EPOCH" '
   # RFC3339 -> epoch; jq mktime is UTC-based so apply the numeric offset ourselves
   def toepoch:
     capture("(?<dt>[0-9-]+T[0-9:]{8})(\\.[0-9]+)?(?<tz>Z|(?<sign>[+-])(?<oh>[0-9]{2}):?(?<om>[0-9]{2}))$") as $c
@@ -144,7 +189,17 @@ ACTIVE="$(jq -r --arg now "$NOW_EPOCH" '
     | select(($now | tonumber) >= ($s - 60) and ($now | tonumber) < $x)
     | {id: .id, summary: (.summary // "meeting"), start: $s, end: $x, meet: first(joinurl),
        attendees: ([.attendees[]? | select(.resource != true) | (.displayName // .email)] | join(", "))}
-  ] | first // empty | @json' "$CACHE" 2>/dev/null || true)"
+  ] | sort_by(-.start)[] | @json' "$CACHE" 2>/dev/null || true)"
+
+# Pick the latest-started active event that has not been answered yet.
+# Taking plain "first" let an overlapping earlier meeting shadow one that
+# just began and re-prompt indefinitely while the new one never surfaced.
+ACTIVE=""
+while IFS= read -r CAND; do
+  [ -z "$CAND" ] && continue
+  CID="$(printf '%s' "$CAND" | jq -r '.id')"
+  if [ ! -f "$STATE_DIR/prompted-${CID}" ]; then ACTIVE="$CAND"; break; fi
+done <<< "$CANDIDATES"
 
 WATCH_META="$STATE_DIR/meet-watch.active"   # exists when watcher started a recording: "<eventId> <endEpoch>"
 
@@ -158,11 +213,20 @@ end run' -- "$1" >/dev/null 2>&1 || true
 # --- auto-stop: watcher-started recording whose event ended >2 min ago ---
 if [ -f "$WATCH_META" ] && recording; then
   read -r W_ID W_END < "$WATCH_META"
-  STILL_ACTIVE="$(printf '%s' "$ACTIVE" | jq -r --arg id "$W_ID" 'select(.id == $id) | .id' 2>/dev/null || true)"
+  STILL_ACTIVE="$(printf '%s\n' "$CANDIDATES" | jq -r --arg id "$W_ID" 'select(.id == $id) | .id' 2>/dev/null || true)"
   if [ -z "$STILL_ACTIVE" ] && [ "$NOW_EPOCH" -gt $(( W_END + 120 )) ]; then
-    "$REC" stop --fast >>"$STATE_DIR/meet-watch.log" 2>&1
-    rm -f "$WATCH_META"
-    notify "Stopped recording, transcribing. Meeting ran over? Restart from the menu bar."
+    # Ask before stopping: osascript notifications are silently dropped by
+    # macOS, so a ran-over meeting used to lose audio with no visible warning.
+    BTN="$("$ZPROMPT" --title "Meeting ended - still recording" \
+      --subtitle "Stop and transcribe, or keep going?" \
+      --primary "Stop & transcribe" --button "Keep recording" --timeout 55 2>/dev/null || echo "timeout")"
+    if [ "$BTN" = "Keep recording" ]; then
+      printf '%s %s\n' "$W_ID" $(( NOW_EPOCH + 1800 )) > "$WATCH_META"  # re-ask in ~30 min
+    else
+      "$REC" stop --fast >>"$STATE_DIR/meet-watch.log" 2>&1
+      rm -f "$WATCH_META"
+      notify "Stopped recording, transcribing. Meeting ran over? Restart from the menu bar."
+    fi
   fi
   exit 0
 fi
@@ -170,7 +234,10 @@ fi
 
 # --- start prompt: ask before recording; unanswered prompt = not recorded ---
 [ -z "$ACTIVE" ] && exit 0
-recording && exit 0
+# A running MANUAL recording no longer suppresses the prompt (watcher-started
+# recordings exit in the auto-stop block above): offer to switch instead.
+CONFLICT=false
+recording && CONFLICT=true
 
 EV_ID="$(printf '%s' "$ACTIVE" | jq -r '.id')"
 EV_TITLE="$(printf '%s' "$ACTIVE" | jq -r '.summary')"
@@ -180,14 +247,32 @@ EV_MEET="$(printf '%s' "$ACTIVE" | jq -r '.meet')"
 PROMPTED="$STATE_DIR/prompted-${EV_ID}"
 [ -f "$PROMPTED" ] && exit 0
 
+# pre-meeting brief (if one was generated for this event): offered on the
+# start prompt itself instead of a separate transient panel
+BRIEF_FILE="$(cat "$STATE_DIR/brief-path-${EV_ID}" 2>/dev/null || true)"
+[ -n "$BRIEF_FILE" ] && [ ! -s "$BRIEF_FILE" ] && BRIEF_FILE=""
+
 # zaatarprompt opens --url only when the PRIMARY button is clicked
-ZARGS=(--title "$EV_TITLE" --subtitle "$(date -r "$EV_START" +%H:%M) - $(date -r "$EV_END" +%H:%M) | not recorded if ignored")
-if [ -n "$EV_MEET" ]; then
-  ZARGS+=(--primary "Join & Record" --button "Record" --url "$EV_MEET")
+if [ "$CONFLICT" = true ]; then
+  CUR_NAME="$(basename "$(cat "$STATE_DIR/rec.meta" 2>/dev/null || echo previous)" .wav)"
+  ZARGS=(--title "$EV_TITLE" --subtitle "$(date -r "$EV_START" +%H:%M) | still recording: $CUR_NAME")
+  if [ -n "$EV_MEET" ]; then
+    ZARGS+=(--primary "Stop previous & join" --button "Stop previous & record" --url "$EV_MEET")
+  else
+    ZARGS+=(--primary "Stop previous & record")
+  fi
+  [ -n "$BRIEF_FILE" ] && ZARGS+=(--button "Read brief")
+  ZARGS+=(--button "Keep current" --timeout 55)
 else
-  ZARGS+=(--primary "Record")
+  ZARGS=(--title "$EV_TITLE" --subtitle "$(date -r "$EV_START" +%H:%M) - $(date -r "$EV_END" +%H:%M) | not recorded if ignored")
+  if [ -n "$EV_MEET" ]; then
+    ZARGS+=(--primary "Join & Record" --button "Record" --url "$EV_MEET")
+  else
+    ZARGS+=(--primary "Record")
+  fi
+  [ -n "$BRIEF_FILE" ] && ZARGS+=(--button "Read brief")
+  ZARGS+=(--button "Skip" --timeout 55)
 fi
-ZARGS+=(--button "Skip" --timeout 55)
 BTN="$("$ZPROMPT" "${ZARGS[@]}" 2>/dev/null || echo "timeout")"
 
 start_recording() {
@@ -210,12 +295,23 @@ start_recording() {
 
 echo "$(date '+%F %T') PROMPT: '$EV_TITLE' -> $BTN" >> "$STATE_DIR/meet-watch.log"
 case "$BTN" in
-  Skip)
+  Skip|"Keep current")
     touch "$PROMPTED"
     ;;
   "Record"|"Join & Record")
     touch "$PROMPTED"
     start_recording
+    ;;
+  "Stop previous & record"|"Stop previous & join")
+    touch "$PROMPTED"
+    "$REC" stop --fast >>"$STATE_DIR/meet-watch.log" 2>&1
+    rm -f "$WATCH_META" "$GUARD"
+    start_recording
+    ;;
+  "Read brief")
+    # open the brief; do NOT mark prompted - the start prompt re-offers next
+    # cycle so the record decision is still made explicitly
+    open "$BRIEF_FILE" >/dev/null 2>&1 || true
     ;;
   *)
     # timed out / prompt unavailable: RE-OFFER each cycle until 10 min into the

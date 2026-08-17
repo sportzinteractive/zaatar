@@ -90,6 +90,7 @@ struct Snapshot {
     var strays: [(pid: String, wav: String)] = []
     var transcribing: [(base: String, elapsed: Int)] = []
     var failed: [String] = []
+    var calFails = 0
 }
 
 func scan() -> Snapshot {
@@ -148,29 +149,41 @@ func scan() -> Snapshot {
         }
     }
     s.failed.sort()
+
+    // Consecutive calendar-fetch failures (meet-watch writes the counter);
+    // >=3 means prompts are running on a stale events cache
+    s.calFails = Int(readFile("\(stateDir)/cal-fail-count") ?? "0") ?? 0
     return s
 }
 
 // MARK: - App
 
-// Active calendar event (from meet-watch's events cache) -> slug for name prefill
-func activeEventSlug() -> String? {
+// Today's calendar events (from meet-watch's events cache) for the manual
+// start picker: every timed event, past and upcoming, sorted by start.
+struct CalEvent {
+    let start: Date
+    let end: Date
+    let title: String
+    var slug: String {
+        let s = title.lowercased()
+            .replacingOccurrences(of: "[^a-z0-9]+", with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return s.isEmpty ? "meeting" : String(s.prefix(40))
+    }
+}
+
+func todayEvents() -> [CalEvent] {
     guard let data = fm.contents(atPath: "\(stateDir)/events-cache.json"),
-          let events = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return nil }
+          let events = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
     let iso = ISO8601DateFormatter()
-    let now = Date()
+    var out: [CalEvent] = []
     for ev in events {
         guard let startStr = (ev["start"] as? [String: Any])?["dateTime"] as? String,
               let endStr = (ev["end"] as? [String: Any])?["dateTime"] as? String,
               let s = iso.date(from: startStr), let e = iso.date(from: endStr) else { continue }
-        // active window: 1 min before start .. 10 min past end (late manual starts)
-        guard now >= s.addingTimeInterval(-60), now < e.addingTimeInterval(600) else { continue }
-        let slug = (ev["summary"] as? String ?? "").lowercased()
-            .replacingOccurrences(of: "[^a-z0-9]+", with: "-", options: .regularExpression)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-        if !slug.isEmpty { return String(slug.prefix(40)) }
+        out.append(CalEvent(start: s, end: e, title: ev["summary"] as? String ?? "meeting"))
     }
-    return nil
+    return out.sorted { $0.start < $1.start }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -178,6 +191,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var snap = Snapshot()
 
     func applicationDidFinishLaunching(_ note: Notification) {
+        // First-launch check: if config or key deps are missing, guide setup.
+        // The .dmg distribution bundles scripts inside the .app; a git-checkout
+        // install has them alongside the binary. Either way, setup.sh handles it.
+        if !fm.fileExists(atPath: "\(home)/.config/zaatar/config") || !depsPresent() {
+            showFirstLaunchSetup()
+        }
+
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
         menu.delegate = self
@@ -187,6 +207,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let timer = Timer(timeInterval: 3, repeats: true) { [weak self] _ in self?.refresh() }
         RunLoop.main.add(timer, forMode: .common)
         try? SMAppService.mainApp.register() // login item; visible in System Settings
+    }
+
+    func depsPresent() -> Bool {
+        for dep in ["ffmpeg", "jq", "whisper-cli"] {
+            if sh("command -v \(dep)").isEmpty { return false }
+        }
+        let models = "\(home)/.local/share/whisper-models"
+        return fm.fileExists(atPath: "\(models)/ggml-large-v3.bin")
+    }
+
+    func showFirstLaunchSetup() {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+
+        let alert = NSAlert()
+        alert.messageText = "Welcome to Zaatar"
+        alert.informativeText = """
+        Zaatar needs a quick one-time setup: install a few dependencies \
+        (ffmpeg, whisper), download transcription models (~3 GB), and \
+        pick your LLM provider.
+
+        This takes about 5 minutes and opens a Terminal window.
+        """
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Set Up Now")
+        alert.addButton(withTitle: "Later")
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            // Find setup.sh: bundled inside .app/Contents/Resources/zaatar/scripts/,
+            // or relative to the binary in a git checkout
+            var setupPath = "\(toolDir)/scripts/setup.sh"
+            if let bundled = Bundle.main.resourcePath {
+                let candidate = "\(bundled)/zaatar/scripts/setup.sh"
+                if fm.fileExists(atPath: candidate) { setupPath = candidate }
+            }
+            // Open Terminal with the setup script
+            let script = "tell application \"Terminal\"\nactivate\ndo script \"bash '\(setupPath)'\"\nend tell"
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            proc.arguments = ["-e", script]
+            try? proc.run()
+        }
+
+        NSApp.setActivationPolicy(.accessory)
     }
 
     func refresh() {
@@ -220,6 +284,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         else if !snap.strays.isEmpty { setTitle("●!", .systemOrange) }
         else if !snap.transcribing.isEmpty { setTitle("…", nil) }
         else if !snap.failed.isEmpty { setTitle("!", .systemRed) }
+        else if snap.calFails >= 3 { setTitle("cal!", .systemOrange) }
         else { setTitle("", nil) }
     }
 
@@ -257,6 +322,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             for t in snap.transcribing { add("Transcribing: \(t.base) (\(hhmm(t.elapsed)))") }
         }
 
+        if snap.calFails >= 3 {
+            sep()
+            add("CALENDAR fetch failing (\(snap.calFails)x in a row)")
+            add("Meeting prompts run on a stale cache", indent: 1)
+        }
+
         if !snap.failed.isEmpty {
             sep()
             for base in snap.failed {
@@ -270,33 +341,83 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         sep()
         add(snap.recording != nil ? "Transcripts (live)..." : "Transcripts...", #selector(openViewer))
         sep()
-        add("Quit Zaatarbar", #selector(quit))
+        add("Run Setup...", #selector(runSetup))
+        add("Quit Zaatar", #selector(quit))
     }
 
     // MARK: Actions
 
     @objc func stopFast() { shAsync("'\(recCmd)' stop --fast") }
     @objc func stopFull() { shAsync("'\(recCmd)' stop") }
+    @objc func runSetup() { showFirstLaunchSetup() }
     @objc func quit() { NSApp.terminate(nil) }
+
+    var startField: NSTextField?
+    var startEvents: [CalEvent] = []
 
     @objc func startRecording() {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.messageText = "Meeting name"
-        alert.informativeText = "Recording starts immediately."
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 230, height: 24))
-        field.stringValue = activeEventSlug() ?? "meeting"
-        alert.accessoryView = field
+        alert.informativeText = "Pick a meeting from today or type a name. Recording starts immediately."
+
+        startEvents = todayEvents()
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
+        startField = field
+
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 280, height: 26), pullsDown: false)
+        let df = DateFormatter(); df.dateFormat = "HH:mm"
+        let now = Date()
+        for ev in startEvents {
+            let flag = now >= ev.start.addingTimeInterval(-60) && now < ev.end.addingTimeInterval(600)
+                ? "now" : (ev.start > now ? "upcoming" : "past")
+            popup.addItem(withTitle: "\(df.string(from: ev.start))  \(ev.title)  (\(flag))")
+        }
+        popup.addItem(withTitle: "Custom name...")
+        popup.target = self
+        popup.action = #selector(startPopupChanged(_:))
+
+        // Default: the event active now, else the next upcoming, else custom
+        var defIdx = startEvents.firstIndex {
+            now >= $0.start.addingTimeInterval(-60) && now < $0.end.addingTimeInterval(600)
+        } ?? startEvents.firstIndex { $0.start > now } ?? startEvents.count
+        if startEvents.isEmpty { defIdx = 0 }
+        popup.selectItem(at: defIdx)
+        field.stringValue = defIdx < startEvents.count ? startEvents[defIdx].slug : "meeting"
+
+        let stack = NSStackView(frame: NSRect(x: 0, y: 0, width: 280, height: 58))
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 6
+        stack.addArrangedSubview(popup)
+        stack.addArrangedSubview(field)
+        popup.widthAnchor.constraint(equalToConstant: 280).isActive = true
+        field.widthAnchor.constraint(equalToConstant: 280).isActive = true
+        alert.accessoryView = stack
+
         alert.addButton(withTitle: "Start")
         alert.addButton(withTitle: "Cancel")
         alert.window.initialFirstResponder = field
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let result = alert.runModal()
+        startField = nil
+        guard result == .alertFirstButtonReturn else { return }
         var slug = field.stringValue.lowercased()
             .replacingOccurrences(of: "[^a-z0-9]+", with: "-", options: .regularExpression)
             .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
         if slug.isEmpty { slug = "meeting" }
         shAsync("'\(recCmd)' start '\(slug)'")
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.refresh() }
+    }
+
+    @objc func startPopupChanged(_ sender: NSPopUpButton) {
+        let i = sender.indexOfSelectedItem
+        guard let field = startField else { return }
+        if i >= 0 && i < startEvents.count {
+            field.stringValue = startEvents[i].slug
+        } else {
+            field.stringValue = ""
+            field.window?.makeFirstResponder(field)
+        }
     }
 
     @objc func stopStrays() {

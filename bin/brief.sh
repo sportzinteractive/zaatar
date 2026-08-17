@@ -19,12 +19,13 @@ BRIEF_DIR="$OUT_DIR/briefs"
 ZPROMPT="$BIN_DIR/../native/zaatarprompt/zaatarprompt"
 SELF_NAMES="$(printf '%s' "${ZAATAR_SELF_NAMES:-}" | tr '[:upper:]' '[:lower:]')"
 
-TITLE=""; ATTENDEES=""; OUT=""; SHOW_PROMPT=true
+TITLE=""; ATTENDEES=""; OUT=""; SHOW_PROMPT=true; ATTACH_JSON="[]"
 while [ $# -gt 0 ]; do
   case "$1" in
     --title)     TITLE="${2:-}"; shift 2 ;;
     --attendees) ATTENDEES="${2:-}"; shift 2 ;;
     --out)       OUT="${2:-}"; shift 2 ;;
+    --attachments-json) ATTACH_JSON="${2:-[]}"; shift 2 ;;
     --no-prompt) SHOW_PROMPT=false; shift ;;
     *) echo "brief: unknown arg $1"; exit 1 ;;
   esac
@@ -95,14 +96,40 @@ if [ -s "$LEDGER" ]; then
   OPEN_COMMITS="$(printf '%s' "$OPEN_COMMITS" | sort -u || true)"
 fi
 
-if [ -z "$MATCHES" ] && [ -z "$OPEN_COMMITS" ]; then
-  echo "brief: no prior transcripts or commitments for: ${TOKENS[*]}"; exit 0
+# --- event attachments (agenda docs, candidate resumes): download, extract
+# text (Google Docs -> txt export, PDFs -> pdftotext), cap 6KB each, max 3 ---
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+ATTACH_TEXT=""
+AN=0
+while IFS=$'\t' read -r AT_ID AT_TITLE AT_MIME; do
+  [ -z "$AT_ID" ] && continue
+  AN=$((AN+1)); [ "$AN" -gt 3 ] && break
+  AF="$TMP/att$AN"
+  TXT=""
+  case "$AT_MIME" in
+    application/vnd.google-apps.*)
+      gog drive download "$AT_ID" --out "$AF.txt" --format txt >/dev/null 2>&1 || true
+      [ -s "$AF.txt" ] && TXT="$(head -c 6144 "$AF.txt")" ;;
+    application/pdf)
+      gog drive download "$AT_ID" --out "$AF.pdf" >/dev/null 2>&1 || true
+      [ -s "$AF.pdf" ] && TXT="$(pdftotext -l 5 "$AF.pdf" - 2>/dev/null | head -c 6144 || true)" ;;
+  esac
+  if [ -n "$TXT" ]; then
+    ATTACH_TEXT="$ATTACH_TEXT
+=== ATTACHMENT: $AT_TITLE ===
+$TXT
+"
+    echo "brief: attachment scanned: $AT_TITLE"
+  fi
+done < <(printf '%s' "$ATTACH_JSON" | jq -r '.[]? | [.fileId, .title, .mimeType] | @tsv' 2>/dev/null || true)
+
+if [ -z "$MATCHES" ] && [ -z "$OPEN_COMMITS" ] && [ -z "$ATTACH_TEXT" ]; then
+  echo "brief: no prior transcripts, commitments, or attachments for: ${TOKENS[*]}"; exit 0
 fi
 
 # --- assemble claude input: Summary+Key Points of each match (transcript
-# sections cut, 8KB cap each) + open ledger lines ---
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+# sections cut, 8KB cap each) + open ledger lines + attachment text ---
 {
   echo "UPCOMING MEETING: ${TITLE}"
   echo "ATTENDEES: ${ATTENDEES}"
@@ -111,6 +138,11 @@ trap 'rm -rf "$TMP"' EXIT
   if [ -n "$OPEN_COMMITS" ]; then
     echo "OPEN COMMITMENTS LEDGER (unticked = not yet verified done):"
     printf '%s\n' "$OPEN_COMMITS"
+    echo
+  fi
+  if [ -n "$ATTACH_TEXT" ]; then
+    echo "MEETING ATTACHMENTS (agenda, resume, docs attached to the invite):"
+    printf '%s\n' "$ATTACH_TEXT"
     echo
   fi
   if [ -n "$MATCHES" ]; then
@@ -143,13 +175,30 @@ Questions raised in prior meetings that never got answered, or threads left hang
 ## Suggested opening move
 One sentence: the single sharpest thing the user could open with.
 
-Rules: total under 250 words. Only state what the input supports; never invent. Use names. No preamble, output only the markdown document.
+If the input includes MEETING ATTACHMENTS, add:
+
+## From the attachments
+3-5 bullets of what matters from the attached docs. For a candidate resume: current role, relevant experience, notable gaps or claims worth probing in the interview.
+
+Rules: total under 250 words (300 if attachments present). Only state what the input supports; never invent. Use names. No preamble, output only the markdown document.
 PROMPT
 )"
 
 RC=0
-zaatar_llm "$PROMPT" \
-  < "$TMP/input.md" > "$TMP/brief.md" 2>"$TMP/claude.err" || RC=$?
+for BATTEMPT in 1 2 3 4 5; do
+  RC=0
+  zaatar_llm "$PROMPT" \
+    < "$TMP/input.md" > "$TMP/brief.md" 2>"$TMP/claude.err" || RC=$?
+  [ "$RC" -eq 0 ] && [ -s "$TMP/brief.md" ] && break
+  echo "brief: LLM attempt $BATTEMPT failed (exit $RC)"
+  # Rate limit: retry inside the pre-meeting window; the start prompt picks
+  # the brief up whenever it lands (BRIEF_FILE re-checked each cycle)
+  if cat "$TMP/brief.md" "$TMP/claude.err" 2>/dev/null | grep -q 'hit your limit'; then
+    sleep 120
+  else
+    sleep 15
+  fi
+done
 if [ "$RC" -ne 0 ] || [ ! -s "$TMP/brief.md" ]; then
   echo "brief: LLM failed (exit $RC)"; cat "$TMP/claude.err" 2>/dev/null || true; exit 1
 fi

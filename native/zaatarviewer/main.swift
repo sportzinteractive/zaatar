@@ -31,6 +31,8 @@ let transcriptsDir = URL(fileURLWithPath: zcfg["ZAATAR_TRANSCRIPTS_DIR"]
     ?? "\(NSHomeDirectory())/Documents/zaatar/transcripts")
 let stateDir = URL(fileURLWithPath: zcfg["ZAATAR_STATE_DIR"]
     ?? "\(NSHomeDirectory())/.local/state/zaatar")
+let recordingsDir = URL(fileURLWithPath: zcfg["ZAATAR_REC_DIR"]
+    ?? "\(NSHomeDirectory())/Recordings/meetings")
 
 struct Entry {
     let title: String
@@ -39,6 +41,30 @@ struct Entry {
     let isLive: Bool
     let mtime: Date
     var pinned: Bool = false
+    var processing: Bool = false
+    var failed: Bool = false
+}
+
+// Bases with a transcribe.sh currently running (same scan zaatarbar uses)
+func runningTranscribeBases() -> Set<String> {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/bin/bash")
+    p.arguments = ["-c", "ps ax -o command= | grep '[t]ranscribe.sh'"]
+    let pipe = Pipe()
+    p.standardOutput = pipe
+    p.standardError = FileHandle.nullDevice
+    guard (try? p.run()) != nil else { return [] }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+    var bases = Set<String>()
+    for line in String(decoding: data, as: UTF8.self).split(separator: "\n") {
+        if let r = line.range(of: #"/[^/ ]+\.wav"#, options: .regularExpression) {
+            var b = (String(line[r]) as NSString).lastPathComponent
+            b.removeLast(4)
+            bases.insert(b)
+        }
+    }
+    return bases
 }
 
 func humanTitle(from filename: String) -> (String, String) {
@@ -79,16 +105,64 @@ func loadEntries() -> [Entry] {
     let fm = FileManager.default
 
     // LIVE entry: recording in progress + live transcript file present
-    if let pidStr = try? String(contentsOf: stateDir.appendingPathComponent("rec.pid"), encoding: .utf8),
-       let pid = Int32(pidStr.trimmingCharacters(in: .whitespacesAndNewlines)),
-       kill(pid, 0) == 0,
+    let recPidAlive: Bool = {
+        guard let pidStr = try? String(contentsOf: stateDir.appendingPathComponent("rec.pid"), encoding: .utf8),
+              let pid = Int32(pidStr.trimmingCharacters(in: .whitespacesAndNewlines)) else { return false }
+        return kill(pid, 0) == 0
+    }()
+    // Only show the live-*.txt that matches the CURRENT recording (rec.meta).
+    // Stale live files from prior recordings used to create duplicate LIVE rows;
+    // the viewer could select the wrong (empty/stale) one -> blank live view.
+    if recPidAlive,
        let liveFiles = try? fm.contentsOfDirectory(at: stateDir, includingPropertiesForKeys: nil) {
+        let metaBase: String? = {
+            guard let p = try? String(contentsOf: stateDir.appendingPathComponent("rec.meta"), encoding: .utf8) else { return nil }
+            let wav = (p.trimmingCharacters(in: .whitespacesAndNewlines) as NSString).lastPathComponent
+            return wav.hasSuffix(".wav") ? String(wav.dropLast(4)) : nil
+        }()
         for f in liveFiles where f.lastPathComponent.hasPrefix("live-") && f.pathExtension == "txt" {
             let raw = f.lastPathComponent
                 .replacingOccurrences(of: "live-", with: "")
+            let fileBase = (raw as NSString).deletingPathExtension
+            if let mb = metaBase, fileBase != mb { continue }
             let (name, when) = humanTitle(from: raw)
             entries.append(Entry(title: "LIVE  \(name)", subtitle: when.isEmpty ? "recording now" : "\(when) - recording now",
                                  url: f, isLive: true, mtime: .distantFuture))
+        }
+    }
+
+    // Recorded-but-unfinished meetings (last 7 days): a wav with no transcript
+    // md gets a "Processing" row - a stopped recording mid-transcription must
+    // never be invisible. No process + no "Done:" in the log = failure row.
+    if let wavs = try? fm.contentsOfDirectory(at: recordingsDir, includingPropertiesForKeys: [.contentModificationDateKey]) {
+        let activeWav = ((try? String(contentsOf: stateDir.appendingPathComponent("rec.meta"), encoding: .utf8)) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let cutoff = Date().addingTimeInterval(-7 * 86400)
+        var running: Set<String>? = nil  // lazy: ps scan only when a candidate exists
+        for f in wavs where f.pathExtension == "wav" {
+            let base = f.deletingPathExtension().lastPathComponent
+            if fm.fileExists(atPath: transcriptsDir.appendingPathComponent(base + ".md").path) { continue }
+            if recPidAlive && f.path == activeWav { continue }  // still recording: LIVE row covers it
+            if fm.fileExists(atPath: stateDir.appendingPathComponent("failed-dismissed-\(base)").path) { continue }
+            let mtime = (try? f.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            if mtime < cutoff { continue }
+            if running == nil { running = runningTranscribeBases() }
+            let log = (try? String(contentsOf: stateDir.appendingPathComponent("transcribe-\(base).log"), encoding: .utf8)) ?? ""
+            let ok = (running ?? []).contains(base) || log.hasPrefix("Done:") || log.contains("\nDone:")
+            let (name, when) = humanTitle(from: base)
+            // Stage + elapsed: slow-but-healthy (CPU diarization runs 15-30
+            // min per meeting hour) must not look identical to hung
+            var stage = "queued"
+            if log.contains("[3/3]") { stage = "cleaning up" }
+            else if log.contains("[2/3] Speaker diarization") { stage = "diarizing" }
+            else if log.contains("[1/3]") { stage = "transcribing" }
+            let mins = max(0, Int(Date().timeIntervalSince(mtime)) / 60)
+            let elapsed = mins >= 60 ? "\(mins / 60)h \(mins % 60)m" : "\(mins)m"
+            let state = ok ? "\(stage) \u{00b7} \(elapsed)" : "transcription failed"
+            entries.append(Entry(title: name,
+                                 subtitle: when.isEmpty ? state : "\(when) - \(state)",
+                                 url: f, isLive: false, mtime: mtime,
+                                 processing: ok, failed: !ok))
         }
     }
 
@@ -139,6 +213,8 @@ func loadEntries() -> [Entry] {
     return entries.sorted {
         if $0.isLive != $1.isLive { return $0.isLive }
         if $0.pinned != $1.pinned { return $0.pinned }
+        let a = $0.processing || $0.failed, b = $1.processing || $1.failed
+        if a != b { return a }
         return $0.mtime > $1.mtime
     }
 }
@@ -167,6 +243,240 @@ var expandedTableCells = Set<String>()
 // clickable checkbox lines (commitment ledger): key -> original file line,
 // click toggles - [ ] / - [x] in the file itself
 var checkboxLines: [String: String] = [:]
+
+// structured ledger: action-item index + assignee filter
+var ledgerItems: [String: ActionItem] = [:]
+var ledgerFilter: String = ""
+
+func stripOrphanHeaders(_ text: String) -> String {
+    var result: [String] = []
+    var pendingHeader: String? = nil
+    for line in text.components(separatedBy: "\n") {
+        if line.hasPrefix("## ") {
+            pendingHeader = line
+        } else if line.hasPrefix("- [") {
+            if let h = pendingHeader { result.append(h); pendingHeader = nil }
+            result.append(line)
+        } else if line.trimmingCharacters(in: .whitespaces).isEmpty {
+            if pendingHeader == nil { result.append(line) }
+        } else {
+            if let h = pendingHeader { result.append(h); pendingHeader = nil }
+            result.append(line)
+        }
+    }
+    var cleaned: [String] = []
+    var lastBlank = false
+    for line in result {
+        let blank = line.trimmingCharacters(in: .whitespaces).isEmpty
+        if blank && lastBlank { continue }
+        cleaned.append(line)
+        lastBlank = blank
+    }
+    while cleaned.last?.trimmingCharacters(in: .whitespaces).isEmpty == true { cleaned.removeLast() }
+    return cleaned.joined(separator: "\n") + "\n"
+}
+
+// --- Structured ledger: parse, group, render with editable fields ---
+
+struct ActionItem {
+    let checked: Bool
+    let date: String
+    let owner: String
+    let recipient: String
+    let text: String
+    let due: String
+    let src: String
+    let rawLine: String
+
+    enum Group: Int, CaseIterable { case overdue = 0, dueSoon, upcoming, noDue, done }
+
+    func group(today: String) -> Group {
+        if checked { return .done }
+        if due == "unspecified" || due.isEmpty { return .noDue }
+        if due < today { return .overdue }
+        let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd"
+        if let d = df.date(from: due), let t = df.date(from: today) {
+            let days = Calendar.current.dateComponents([.day], from: t, to: d).day ?? 0
+            if days <= 7 { return .dueSoon }
+        }
+        return .upcoming
+    }
+
+    var duePretty: String {
+        if due == "unspecified" || due.isEmpty { return "no due date" }
+        let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd"
+        guard let d = df.date(from: due) else { return due }
+        let pretty = DateFormatter(); pretty.dateFormat = "MMM d"
+        let todayStr = df.string(from: Date())
+        var s = pretty.string(from: d)
+        if due < todayStr, let td = df.date(from: todayStr) {
+            let days = Calendar.current.dateComponents([.day], from: d, to: td).day ?? 0
+            s += " (\(days)d overdue)"
+        }
+        return s
+    }
+
+    var assigneeDisplay: String {
+        recipient.isEmpty || recipient == "self" ? owner : "\(owner) \u{2192} \(recipient)"
+    }
+
+    var srcPretty: String {
+        src.replacingOccurrences(of: #"^\d{4}-\d{2}-\d{2}-\d{4}-"#, with: "", options: .regularExpression)
+           .replacingOccurrences(of: "-", with: " ")
+    }
+}
+
+func parseActionItems(_ content: String) -> [ActionItem] {
+    var items: [ActionItem] = []
+    for line in content.components(separatedBy: "\n") {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        guard t.hasPrefix("- [") else { continue }
+        let checked = t.hasPrefix("- [x]")
+        let parts = t.components(separatedBy: " | ")
+        guard parts.count >= 4 else { continue }
+        let first = parts[0]
+        let dateMatch = first.range(of: #"\d{4}-\d{2}-\d{2}"#, options: .regularExpression)
+        let date = dateMatch.map { String(first[$0]) } ?? ""
+        let ownerPart = parts[1]
+        let ownerSplit = ownerPart.components(separatedBy: " -> ")
+        let owner = ownerSplit[0].trimmingCharacters(in: .whitespaces)
+        let recipient = ownerSplit.count > 1 ? ownerSplit[1].trimmingCharacters(in: .whitespaces) : ""
+        let text = parts[2].trimmingCharacters(in: .whitespaces)
+        var due = "unspecified"
+        if let dp = parts.first(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("due:") }) {
+            due = dp.trimmingCharacters(in: .whitespaces)
+                .replacingOccurrences(of: "due: ", with: "").replacingOccurrences(of: "due:", with: "")
+                .trimmingCharacters(in: .whitespaces)
+        }
+        var src = ""
+        if let sp = parts.first(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("src:") }) {
+            src = sp.trimmingCharacters(in: .whitespaces)
+                .replacingOccurrences(of: "src: ", with: "").trimmingCharacters(in: .whitespaces)
+        }
+        items.append(ActionItem(checked: checked, date: date, owner: owner, recipient: recipient,
+                                text: text, due: due, src: src, rawLine: t))
+    }
+    return items
+}
+
+func renderLedger(_ content: String, url: URL) -> NSMutableAttributedString {
+    let doc = NSMutableAttributedString()
+    ledgerItems = [:]
+    let allItems = parseActionItems(content)
+    let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd"
+    let today = df.string(from: Date())
+
+    let groupLabels: [ActionItem.Group: String] = [
+        .overdue: "OVERDUE", .dueSoon: "DUE SOON", .upcoming: "UPCOMING",
+        .noDue: "NO DUE DATE", .done: "DONE"]
+    let groupColors: [ActionItem.Group: NSColor] = [
+        .overdue: .systemRed, .dueSoon: .systemOrange, .upcoming: .controlAccentColor,
+        .noDue: .secondaryLabelColor, .done: .tertiaryLabelColor]
+
+    // Title
+    let titlePS = NSMutableParagraphStyle(); titlePS.paragraphSpacing = 4
+    doc.append(NSAttributedString(string: "Action Items\n",
+        attributes: [.font: NSFont.systemFont(ofSize: 22, weight: .semibold),
+                     .foregroundColor: NSColor.labelColor, .kern: NSNumber(value: -0.4), .paragraphStyle: titlePS]))
+
+    // Summary
+    let openCount = allItems.filter { !$0.checked }.count
+    let overdueCount = allItems.filter { $0.group(today: today) == .overdue }.count
+    var summary = "\(openCount) open"
+    if overdueCount > 0 { summary += " \u{00B7} \(overdueCount) overdue" }
+    doc.append(NSAttributedString(string: summary + "\n",
+        attributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.secondaryLabelColor]))
+
+    // Assignee filter bar
+    let assignees = Array(Set(allItems.flatMap { [$0.owner, $0.recipient] }
+        .filter { !$0.isEmpty && $0 != "self" })).sorted()
+    if !assignees.isEmpty {
+        let fPS = NSMutableParagraphStyle(); fPS.paragraphSpacingBefore = 8; fPS.paragraphSpacing = 12
+        doc.append(NSAttributedString(string: "Filter: ",
+            attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.tertiaryLabelColor, .paragraphStyle: fPS]))
+        let allLink: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11, weight: ledgerFilter.isEmpty ? .semibold : .regular),
+            .foregroundColor: ledgerFilter.isEmpty ? NSColor.controlAccentColor : NSColor.secondaryLabelColor,
+            .link: URL(string: "zaatar-filter://all")! as Any]
+        doc.append(NSAttributedString(string: "All", attributes: allLink))
+        for a in assignees {
+            let enc = a.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed) ?? a
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 11, weight: ledgerFilter == a ? .semibold : .regular),
+                .foregroundColor: ledgerFilter == a ? NSColor.controlAccentColor : NSColor.secondaryLabelColor,
+                .link: URL(string: "zaatar-filter://\(enc)")! as Any]
+            doc.append(NSAttributedString(string: "  \u{00B7}  ", attributes: [.font: NSFont.systemFont(ofSize: 11),
+                .foregroundColor: NSColor.tertiaryLabelColor]))
+            doc.append(NSAttributedString(string: a, attributes: attrs))
+        }
+        doc.append(NSAttributedString(string: "\n", attributes: [:]))
+    }
+
+    let grouped = Dictionary(grouping: allItems) { $0.group(today: today) }
+
+    for group in ActionItem.Group.allCases {
+        guard var groupItems = grouped[group], !groupItems.isEmpty else { continue }
+        if !ledgerFilter.isEmpty {
+            groupItems = groupItems.filter { $0.owner == ledgerFilter || $0.recipient == ledgerFilter }
+            if groupItems.isEmpty { continue }
+        }
+        let color = groupColors[group] ?? .labelColor
+        let label = groupLabels[group] ?? ""
+
+        // Group header
+        let ghPS = NSMutableParagraphStyle(); ghPS.paragraphSpacingBefore = 20; ghPS.paragraphSpacing = 6
+        doc.append(NSAttributedString(string: "\(label)  \(groupItems.count)\n",
+            attributes: [.font: NSFont.systemFont(ofSize: 11, weight: .bold),
+                         .foregroundColor: color, .kern: NSNumber(value: 1.0), .paragraphStyle: ghPS]))
+
+        for item in groupItems {
+            let key = String(UInt(bitPattern: item.rawLine.hashValue))
+            ledgerItems[key] = item
+            checkboxLines[key] = item.rawLine
+
+            let bodyPS = NSMutableParagraphStyle(); bodyPS.lineHeightMultiple = 1.3; bodyPS.paragraphSpacing = 2
+            let body: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.labelColor, .paragraphStyle: bodyPS]
+
+            // Checkbox
+            var cb = body; cb[.link] = URL(string: "zaatar-check://\(key)")!
+            cb[.font] = NSFont.systemFont(ofSize: 14, weight: .medium)
+            cb[.foregroundColor] = item.checked ? NSColor.tertiaryLabelColor : NSColor.controlAccentColor
+            doc.append(NSAttributedString(string: item.checked ? "\u{2611} " : "\u{2610} ", attributes: cb))
+
+            // Text (clickable to edit)
+            var ta = body; ta[.link] = URL(string: "zaatar-edittext://\(key)")!
+            ta[.font] = NSFont.systemFont(ofSize: 13, weight: .medium)
+            ta[.cursor] = NSCursor.pointingHand
+            if item.checked { ta[.foregroundColor] = NSColor.tertiaryLabelColor
+                ta[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
+            doc.append(NSAttributedString(string: item.text, attributes: ta))
+
+            // Delete
+            var del = body; del[.link] = URL(string: "zaatar-delete://\(key)")!
+            del[.font] = NSFont.systemFont(ofSize: 11); del[.foregroundColor] = NSColor.tertiaryLabelColor
+            doc.append(NSAttributedString(string: "  \u{00D7}\n", attributes: del))
+
+            // Second line: assignee (clickable) + due (clickable) + source
+            let metaPS = NSMutableParagraphStyle(); metaPS.firstLineHeadIndent = 22; metaPS.paragraphSpacing = 14
+            let meta: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: metaPS]
+            var oa = meta; oa[.link] = URL(string: "zaatar-editowner://\(key)")!
+            doc.append(NSAttributedString(string: item.assigneeDisplay, attributes: oa))
+            doc.append(NSAttributedString(string: "  \u{00B7}  ", attributes: meta))
+            var da = meta; da[.link] = URL(string: "zaatar-editdue://\(key)")!
+            if group == .overdue { da[.foregroundColor] = NSColor.systemRed }
+            doc.append(NSAttributedString(string: item.duePretty, attributes: da))
+            doc.append(NSAttributedString(string: "  \u{00B7}  \(item.srcPretty)\n", attributes: meta))
+        }
+    }
+
+    if allItems.isEmpty {
+        doc.append(NSAttributedString(string: "\nNo action items yet. Items are extracted from meeting transcripts automatically.\n",
+            attributes: [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.secondaryLabelColor]))
+    }
+    return doc
+}
 
 func appendTable(_ rowLines: [String], to out: NSMutableAttributedString) {
     let rows = rowLines.filter { !isTableSeparator($0) }.map(tableCells)
@@ -499,7 +809,7 @@ enum Row {
     case entry(Entry)
 }
 
-final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSWindowDelegate, NSTextViewDelegate {
+final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSWindowDelegate, NSTextViewDelegate, NSTextFieldDelegate {
 
     // expand/collapse of truncated table cells (zaatar-toggle:// links)
     func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
@@ -525,8 +835,48 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
                   var content = try? String(contentsOf: sel, encoding: .utf8) else { return true }
             if let r = content.range(of: lineText + "\n") ?? content.range(of: lineText) {
                 content.removeSubrange(r)
+                content = stripOrphanHeaders(content)
                 try? content.write(to: sel, atomically: true, encoding: .utf8)
             }
+        case "zaatar-edittext", "zaatar-editowner", "zaatar-editdue":
+            let field = url.scheme == "zaatar-edittext" ? "text" : url.scheme == "zaatar-editowner" ? "owner" : "due"
+            let editKey = key
+            guard !editKey.isEmpty, let item = ledgerItems[editKey], let sel = selectedURL,
+                  var content = try? String(contentsOf: sel, encoding: .utf8) else { return true }
+            let alert = NSAlert()
+            let tf = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+            switch field {
+            case "text":  alert.messageText = "Edit action item"; tf.stringValue = item.text
+            case "owner": alert.messageText = "Edit assignee (Name -> Recipient)"; tf.stringValue = "\(item.owner) -> \(item.recipient)"
+            case "due":   alert.messageText = "Edit due date (YYYY-MM-DD)"; tf.stringValue = item.due
+            default: return true
+            }
+            alert.accessoryView = tf
+            alert.addButton(withTitle: "Save")
+            alert.addButton(withTitle: "Cancel")
+            alert.window.initialFirstResponder = tf
+            guard alert.runModal() == .alertFirstButtonReturn else { return true }
+            let newVal = tf.stringValue.trimmingCharacters(in: .whitespaces)
+            guard !newVal.isEmpty else { return true }
+            var newLine = item.rawLine
+            switch field {
+            case "text":
+                newLine = newLine.replacingOccurrences(of: "| \(item.text) |", with: "| \(newVal) |")
+            case "owner":
+                let oldOwner = "\(item.owner) -> \(item.recipient)"
+                let newOwner = newVal.contains("->") ? newVal : "\(newVal) -> self"
+                newLine = newLine.replacingOccurrences(of: "| \(oldOwner) |", with: "| \(newOwner) |")
+            case "due":
+                newLine = newLine.replacingOccurrences(of: "due: \(item.due)", with: "due: \(newVal)")
+            default: break
+            }
+            if newLine != item.rawLine, let r = content.range(of: item.rawLine) {
+                content.replaceSubrange(r, with: newLine)
+                content = stripOrphanHeaders(content)
+                try? content.write(to: sel, atomically: true, encoding: .utf8)
+            }
+        case "zaatar-filter":
+            ledgerFilter = (key == "all" || key.isEmpty) ? "" : key.removingPercentEncoding ?? key
         default:
             return false
         }
@@ -537,6 +887,41 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
     }
     // single-window app: closing the window quits (SwiftBar relaunches next time)
     func windowWillClose(_ notification: Notification) { NSApp.terminate(nil) }
+
+    var activeEditField: String = ""
+    var activeEditKey: String = ""
+
+    func controlTextDidEndEditing(_ notification: Notification) {
+        guard let editor = notification.object as? NSTextField, editor.tag == 9999,
+              !activeEditKey.isEmpty, let item = ledgerItems[activeEditKey],
+              let sel = selectedURL,
+              var content = try? String(contentsOf: sel, encoding: .utf8) else {
+            textView.subviews.filter { $0.tag == 9999 }.forEach { $0.removeFromSuperview() }
+            return
+        }
+        let newVal = editor.stringValue.trimmingCharacters(in: .whitespaces)
+        editor.removeFromSuperview()
+        guard !newVal.isEmpty else { showSelection(scrollToEnd: false); return }
+        var newLine = item.rawLine
+        switch activeEditField {
+        case "text":
+            newLine = newLine.replacingOccurrences(of: "| \(item.text) |", with: "| \(newVal) |")
+        case "owner":
+            let oldOwner = "\(item.owner) -> \(item.recipient)"
+            let newOwner = newVal.contains("->") ? newVal : "\(newVal) -> self"
+            newLine = newLine.replacingOccurrences(of: "| \(oldOwner) |", with: "| \(newOwner) |")
+        case "due":
+            newLine = newLine.replacingOccurrences(of: "due: \(item.due)", with: "due: \(newVal)")
+        default: break
+        }
+        if newLine != item.rawLine, let r = content.range(of: item.rawLine) {
+            content.replaceSubrange(r, with: newLine)
+            content = stripOrphanHeaders(content)
+            try? content.write(to: sel, atomically: true, encoding: .utf8)
+        }
+        activeEditField = ""; activeEditKey = ""
+        showSelection(scrollToEnd: false)
+    }
 
     var all: [Entry] = []
     var rows: [Row] = []
@@ -549,6 +934,7 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
     var scrollTopNoTabs: NSLayoutConstraint?
     var timer: Timer?
     var selectedURL: URL?
+    var selectedFileMtime: Date = .distantPast
     var contentCache: [URL: String] = [:]
 
     func setTabsVisible(_ visible: Bool) {
@@ -581,7 +967,7 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
 
     // full-text: falls back to file contents when title/subtitle don't match
     func contentMatches(_ e: Entry, _ q: String) -> Bool {
-        if e.isLive { return false }
+        if e.isLive || e.processing || e.failed { return false }
         if let cached = contentCache[e.url] { return cached.contains(q) }
         let c = ((try? String(contentsOf: e.url, encoding: .utf8)) ?? "").lowercased()
         contentCache[e.url] = c
@@ -591,6 +977,7 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
     func section(for e: Entry) -> String {
         if e.isLive { return "Live" }
         if e.pinned { return "Pinned" }
+        if e.processing || e.failed { return "Processing" }
         if e.title.hasPrefix("Brief: ") { return "Pre-meeting briefs" }
         let cal = Calendar.current
         if cal.isDateInToday(e.mtime) { return "Today" }
@@ -634,6 +1021,8 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
     func icon(for e: Entry) -> (String, NSColor) {
         if e.isLive { return ("record.circle", .systemRed) }
         if e.pinned { return ("checklist", .systemOrange) }
+        if e.processing { return ("arrow.triangle.2.circlepath", .systemOrange) }
+        if e.failed { return ("exclamationmark.triangle.fill", .systemRed) }
         if e.title.hasPrefix("Brief: ") { return ("doc.badge.clock", .systemTeal) }
         return ("text.bubble", .secondaryLabelColor)
     }
@@ -687,16 +1076,64 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         // the 5s refresh re-selects the same row (reload -> selectRowIndexes);
-        // re-rendering then would yank the scroll position back to the top
-        if let e = entry(at: table.selectedRow), !e.isLive, e.url == selectedURL { return }
+        // re-rendering then would yank the scroll position back to the top.
+        // BUT if the file changed on disk (commitment ledger grows after each
+        // meeting), re-render anyway - preserving scroll - or the pane shows
+        // stale content forever while the row stays selected.
+        if let e = entry(at: table.selectedRow), !e.isLive, e.url == selectedURL {
+            let m = ((try? FileManager.default.attributesOfItem(atPath: e.url.path))?[.modificationDate] as? Date) ?? .distantPast
+            if m <= selectedFileMtime { return }
+            let saved = textView.enclosingScrollView?.contentView.bounds.origin
+            showSelection(scrollToEnd: false)
+            if let p = saved { textView.enclosingScrollView?.contentView.scroll(to: p) }
+            return
+        }
         showSelection(scrollToEnd: false)
     }
 
     func showSelection(scrollToEnd: Bool) {
         guard let e = entry(at: table.selectedRow) else { return }
+        // processing/failed rows point at the wav: fixed message, never read the file
+        if e.processing || e.failed {
+            selectedURL = e.url
+            tabs = []
+            setTabsVisible(false)
+            let doc = NSMutableAttributedString()
+            let titlePS = NSMutableParagraphStyle()
+            titlePS.paragraphSpacing = 3
+            doc.append(NSAttributedString(string: e.title + "\n",
+                attributes: [.font: NSFont.systemFont(ofSize: 22, weight: .semibold),
+                             .foregroundColor: NSColor.labelColor,
+                             .kern: -0.4,
+                             .paragraphStyle: titlePS]))
+            doc.append(NSAttributedString(string: e.subtitle + "\n\n",
+                attributes: [.font: NSFont.systemFont(ofSize: 12),
+                             .foregroundColor: NSColor.secondaryLabelColor]))
+            let msg = e.processing
+                ? "In progress - no details available yet. The transcript will appear here when processing finishes."
+                : "Transcription did not complete. Retry from the Zaatar menu bar (FAILED entry)."
+            doc.append(NSAttributedString(string: msg,
+                attributes: [.font: NSFont.systemFont(ofSize: 13),
+                             .foregroundColor: NSColor.secondaryLabelColor]))
+            textView.textStorage?.setAttributedString(doc)
+            textView.scroll(.zero)
+            return
+        }
         let urlChanged = selectedURL != e.url
         selectedURL = e.url
+        selectedFileMtime = ((try? FileManager.default.attributesOfItem(atPath: e.url.path))?[.modificationDate] as? Date) ?? .distantPast
         let content = (try? String(contentsOf: e.url, encoding: .utf8)) ?? ""
+
+        // Structured ledger view: grouped by due status, editable fields, assignee filter
+        if e.pinned && e.title == "Action Items" {
+            tabs = []
+            setTabsVisible(false)
+            let doc = renderLedger(content, url: e.url)
+            textView.textStorage?.setAttributedString(doc)
+            if scrollToEnd { textView.scrollToEndOfDocument(nil) } else { textView.scroll(.zero) }
+            return
+        }
+
         let display = content.isEmpty && e.isLive
             ? "Waiting for the first live chunk (~30s of audio)..." : content
         var questions: [String] = []

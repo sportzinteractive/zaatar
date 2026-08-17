@@ -17,7 +17,7 @@
 # Google-Calendar-style JSON array (see README "Calendar integration" for the
 # contract). Meet/Zoom/Teams/Webex links are all detected. Examples:
 # Google Calendar via gogcli:
-# ZAATAR_CALENDAR_CMD="gog calendar events --today -j --results-only"
+# ZAATAR_CALENDAR_CMD="gog calendar events --today --max 50 -j --results-only"
 # Outlook / Microsoft 365 via the bundled Graph adapter:
 # ZAATAR_CALENDAR_CMD="$HOME/path/to/zaatar/scripts/outlook-calendar.sh"
 

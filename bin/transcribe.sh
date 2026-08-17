@@ -12,7 +12,14 @@ BIN_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 . "$BIN_DIR/../lib/config.sh"
 
 FAST=false
-if [ "${1:-}" = "--fast" ]; then FAST=true; shift; fi
+REDO=false
+while :; do
+  case "${1:-}" in
+    --fast) FAST=true; shift ;;
+    --redo-cleanup) REDO=true; shift ;;
+    *) break ;;
+  esac
+done
 AUDIO="$1"
 MODEL="$ZAATAR_MODEL"
 OUT_DIR="$ZAATAR_TRANSCRIPTS_DIR"
@@ -25,14 +32,30 @@ WHISPER="$(command -v whisper-cli)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-[ -f "$MODEL" ] || { echo "ERROR: model missing at $MODEL"; exit 1; }
-[ -f "$AUDIO" ] || { echo "ERROR: audio missing at $AUDIO"; exit 1; }
+if [ "$REDO" = false ]; then
+  [ -f "$MODEL" ] || { echo "ERROR: model missing at $MODEL"; exit 1; }
+  [ -f "$AUDIO" ] || { echo "ERROR: audio missing at $AUDIO"; exit 1; }
+fi
 
 # Title sidecar (written by meet-watch): the real calendar event title.
 # The filename slug is lossy (lowercased, punctuation stripped, 40-char cut).
 TITLE_FILE="$(dirname "$AUDIO")/${BASE}.title"
 MTITLE=""
 [ -s "$TITLE_FILE" ] && MTITLE="$(head -1 "$TITLE_FILE")"
+
+# Participant sidecar (written by meet-watch from the calendar invite):
+# biases whisper toward correct name spellings + grounds claude's speaker mapping
+ATT_FILE="$(dirname "$AUDIO")/${BASE}.attendees"
+ATTENDEES=""
+[ -s "$ATT_FILE" ] && ATTENDEES="$(head -1 "$ATT_FILE")"
+
+RAW_MD="$OUT_DIR/${BASE}-raw.md"
+DIARIZED_OK=false
+
+if [ "$REDO" = true ]; then
+  [ -s "$RAW_MD" ] || { echo "ERROR: --redo-cleanup but no raw transcript at $RAW_MD"; exit 1; }
+  echo "[redo] Reusing existing raw transcript: $RAW_MD"
+else
 
 # --- VAD junk guard: a recording with no real speech makes whisper hallucinate
 # an entire fake transcript. Skip the pipeline instead.
@@ -57,19 +80,12 @@ if [ "${ZAATAR_VAD_MIN_SPEECH:-0}" -gt 0 ] && [ -x "$VAD_PY" ] && [ -f "$VAD_SCR
   fi
 fi
 
-# Participant sidecar (written by meet-watch from the calendar invite):
-# biases whisper toward correct name spellings + grounds claude's speaker mapping
-ATT_FILE="$(dirname "$AUDIO")/${BASE}.attendees"
-ATTENDEES=""
-[ -s "$ATT_FILE" ] && ATTENDEES="$(head -1 "$ATT_FILE")"
-
 echo "[1/3] Original-language transcript (whisper.cpp)..."
 WPROMPT=()
 [ -n "$ATTENDEES" ] && WPROMPT=(--prompt "Meeting participants: ${ATTENDEES}." --carry-initial-prompt)
 # ${arr[@]+...} idiom: bash 3.2 + set -u treats an empty array expansion as fatal
 "$WHISPER" -m "$MODEL" -f "$AUDIO" -l auto -mc 0 ${WPROMPT[@]+"${WPROMPT[@]}"} -osrt -of "$TMP/orig" 2>&1 | tail -1
 
-DIARIZED_OK=false
 if [ "$FAST" = false ] && [ -n "$HF_TOKEN" ] && command -v whisperx >/dev/null; then
   echo "[2/3] Speaker diarization (whisperx + pyannote)..."
   # medium model: speaker labels come from pyannote, not whisper;
@@ -87,7 +103,6 @@ else
 fi
 
 # Raw output (always kept, audit trail)
-RAW_MD="$OUT_DIR/${BASE}-raw.md"
 {
   echo "# Raw Transcript: ${BASE}"
   echo
@@ -109,6 +124,8 @@ RAW_MD="$OUT_DIR/${BASE}-raw.md"
     echo '```'
   fi
 } > "$RAW_MD"
+
+fi  # REDO=false
 
 echo "[3/3] Claude cleanup (transcript + summary)..."
 MD="$OUT_DIR/${BASE}.md"
@@ -165,16 +182,35 @@ fi
 CLEAN_OK=false
 RC=0
 if zaatar_llm_available; then
-  for ATTEMPT in 1 2; do
+  ATTEMPT=0
+  while [ "$ATTEMPT" -lt 4 ]; do
+    ATTEMPT=$((ATTEMPT+1))
     RC=0
     zaatar_llm "$CLEANUP_PROMPT" \
       < "$RAW_MD" > "$TMP/clean.md" 2>"$TMP/claude.err" || RC=$?
     if [ "$RC" -eq 0 ] && [ -s "$TMP/clean.md" ]; then CLEAN_OK=true; break; fi
     echo "WARN: LLM cleanup attempt $ATTEMPT failed (exit $RC)"
+    # Claude plan rate limit ("You've hit your limit - resets 3:50pm"): retrying
+    # immediately just hits the same wall. Wait until the stated reset instead.
+    RESET="$(cat "$TMP/clean.md" "$TMP/claude.err" 2>/dev/null | grep -oE 'resets [0-9]{1,2}(:[0-9]{2})?[ap]m' | head -1 | awk '{print $2}')"
+    if [ -n "$RESET" ]; then
+      case "$RESET" in *:*) : ;; *) RESET="${RESET%??}:00${RESET#"${RESET%??}"}" ;; esac
+      TARGET="$(date -j -f '%Y-%m-%d %I:%M%p' "$(date +%Y-%m-%d) $RESET" +%s 2>/dev/null || echo 0)"
+      NOW_TS="$(date +%s)"
+      [ "$TARGET" -gt 0 ] && [ "$TARGET" -le "$NOW_TS" ] && TARGET=$((TARGET + 86400))
+      WAIT=$((TARGET - NOW_TS + 120))
+      if [ "$TARGET" -gt 0 ] && [ "$WAIT" -le 21600 ]; then
+        echo "Rate limited: waiting $((WAIT/60)) min (until $RESET + 2 min) before retrying cleanup..."
+        sleep "$WAIT"
+        continue
+      fi
+    fi
+    sleep 10
   done
 fi
 
 if [ "$CLEAN_OK" = true ]; then
+  rm -f "$STATE_DIR/cleanup-pending-${BASE}"
   {
     [ -n "$MTITLE" ] && echo "<!-- zaatar-title: ${MTITLE} -->"
     cat "$TMP/clean.md"
@@ -195,6 +231,13 @@ else
     head -c 2048 "$TMP/clean.md" 2>/dev/null || true
   } > "$ERR_KEEP"
   echo "Error log kept: $ERR_KEEP"
+  # Persist the failure: meet-watch retries cleanup from this marker, and the
+  # user gets a visible panel instead of a silent degrade to raw.
+  touch "$STATE_DIR/cleanup-pending-${BASE}"
+  ZP="$BIN_DIR/../native/zaatarprompt/zaatarprompt"
+  [ -x "$ZP" ] && nohup "$ZP" --title "Zaatar: cleanup failed" \
+    --subtitle "${MTITLE:-$BASE} - raw transcript saved; cleanup retries automatically" \
+    --primary "OK" --timeout 180 >/dev/null 2>&1 &
   {
     [ -n "$MTITLE" ] && echo "<!-- zaatar-title: ${MTITLE} -->"
     cat "$RAW_MD"
@@ -225,4 +268,11 @@ fi
 
 echo "Done: $MD"
 echo "Raw:  $RAW_MD"
+# Visible completion notice: zaatarprompt panel (osascript notifications are
+# silently dropped by macOS for unbundled scripts)
+ZP="$BIN_DIR/../native/zaatarprompt/zaatarprompt"
+if [ "$CLEAN_OK" = true ] && [ -x "$ZP" ]; then
+  nohup "$ZP" --title "Transcript ready" --subtitle "${MTITLE:-$BASE}" \
+    --primary "OK" --timeout 60 >/dev/null 2>&1 &
+fi
 osascript -e "display notification \"Transcript ready: ${BASE}\" with title \"Zaatar\"" 2>/dev/null || true

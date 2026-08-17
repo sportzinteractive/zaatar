@@ -280,7 +280,7 @@ input.installTap(onBus: 0, bufferSize: 4096, format: inFormat) { buffer, _ in
 func shutdown() {
     engine.stop()
     input.removeTap(onBus: 0)
-    file.close() // finalizes WAV header
+    if #available(macOS 15.0, *) { file.close() } // finalizes WAV header
     teardownSystemAudioCapture()
     try? FileManager.default.removeItem(at: levelURL)
     exit(0)

@@ -105,7 +105,7 @@ ask "Choice" "3"
 CAL_SET=""
 case "$REPLY" in
   1)
-    set_config ZAATAR_CALENDAR_CMD "gog calendar events --today -j --results-only"
+    set_config ZAATAR_CALENDAR_CMD "gog calendar events --today --max 50 -j --results-only"
     CAL_SET=1
     if command -v gog >/dev/null 2>&1; then
       note "gogcli found. If not authenticated yet: gog auth login"
