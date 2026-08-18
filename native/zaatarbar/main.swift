@@ -341,6 +341,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         sep()
         add(snap.recording != nil ? "Transcripts (live)..." : "Transcripts...", #selector(openViewer))
         sep()
+        add("Preferences...", #selector(openPrefs))
         add("Run Setup...", #selector(runSetup))
         add("Quit Zaatar", #selector(quit))
     }
@@ -349,6 +350,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func stopFast() { shAsync("'\(recCmd)' stop --fast") }
     @objc func stopFull() { shAsync("'\(recCmd)' stop") }
+    @objc func openPrefs() {
+        // Launch the viewer with --prefs flag to open the preferences window
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: viewerCmd)
+        task.arguments = ["--prefs"]
+        try? task.run()
+    }
     @objc func runSetup() { showFirstLaunchSetup() }
     @objc func quit() { NSApp.terminate(nil) }
 

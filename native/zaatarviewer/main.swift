@@ -6,6 +6,58 @@
 
 import AppKit
 
+// --- Design System: Premium Utilitarian Minimalism ---
+struct DS {
+    // Canvas & surfaces
+    static let canvas      = NSColor(calibratedRed: 0.969, green: 0.965, blue: 0.953, alpha: 1) // #F7F6F3
+    static let surface     = NSColor(calibratedRed: 0.984, green: 0.984, blue: 0.976, alpha: 1) // #FBFBFA
+    static let cardWhite   = NSColor.white
+
+    // Text hierarchy (never pure black)
+    static let textPrimary   = NSColor(calibratedRed: 0.184, green: 0.204, blue: 0.216, alpha: 1) // #2F3437
+    static let textSecondary = NSColor(calibratedRed: 0.471, green: 0.467, blue: 0.455, alpha: 1) // #787774
+    static let textTertiary  = NSColor(calibratedRed: 0.639, green: 0.635, blue: 0.620, alpha: 1) // #A3A29E
+
+    // Structural
+    static let border   = NSColor(calibratedRed: 0.918, green: 0.918, blue: 0.918, alpha: 1) // #EAEAEA
+    static let divider  = NSColor(calibratedWhite: 0, alpha: 0.06)
+
+    // Accent pastels (bg, text pairs)
+    static let paleRedBg     = NSColor(calibratedRed: 0.992, green: 0.922, blue: 0.925, alpha: 1) // #FDEBEC
+    static let paleRedText   = NSColor(calibratedRed: 0.624, green: 0.184, blue: 0.176, alpha: 1) // #9F2F2D
+    static let paleYellowBg  = NSColor(calibratedRed: 0.984, green: 0.953, blue: 0.859, alpha: 1) // #FBF3DB
+    static let paleYellowText = NSColor(calibratedRed: 0.584, green: 0.392, blue: 0.0, alpha: 1)  // #956400
+    static let paleBlueBg    = NSColor(calibratedRed: 0.882, green: 0.953, blue: 0.996, alpha: 1) // #E1F3FE
+    static let paleBlueText  = NSColor(calibratedRed: 0.122, green: 0.424, blue: 0.624, alpha: 1) // #1F6C9F
+    static let paleGreenBg   = NSColor(calibratedRed: 0.929, green: 0.953, blue: 0.925, alpha: 1) // #EDF3EC
+    static let paleGreenText = NSColor(calibratedRed: 0.204, green: 0.396, blue: 0.220, alpha: 1) // #346538
+
+    // Brand green (Zaatar leaf)
+    static let brandGreen     = NSColor(calibratedRed: 0.30, green: 0.62, blue: 0.36, alpha: 1)
+    static let brandGreenDark = NSColor(calibratedRed: 0.16, green: 0.42, blue: 0.24, alpha: 1)
+
+    // Sidebar
+    static let sidebarBg       = canvas
+    static let sidebarSelected = NSColor(calibratedWhite: 0, alpha: 0.06)
+
+    // Typography helpers
+    static func serif(size: CGFloat, weight: NSFont.Weight = .semibold) -> NSFont {
+        let base = NSFont.systemFont(ofSize: size, weight: weight)
+        if let descriptor = base.fontDescriptor.withDesign(.serif) {
+            return NSFont(descriptor: descriptor, size: size) ?? base
+        }
+        return base
+    }
+
+    static func mono(size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
+        NSFont.monospacedSystemFont(ofSize: size, weight: weight)
+    }
+
+    static func body(size: CGFloat = 13, weight: NSFont.Weight = .regular) -> NSFont {
+        NSFont.systemFont(ofSize: size, weight: weight)
+    }
+}
+
 // Config: plain KEY="value" lines in ~/.config/zaatar/config (same file the
 // shell scripts source). $HOME is the only substitution supported.
 func zaatarConfig() -> [String: String] {
@@ -34,6 +86,240 @@ let stateDir = URL(fileURLWithPath: zcfg["ZAATAR_STATE_DIR"]
 let recordingsDir = URL(fileURLWithPath: zcfg["ZAATAR_REC_DIR"]
     ?? "\(NSHomeDirectory())/Recordings/meetings")
 
+// --- Preferences ---
+struct Prefs {
+    private static let d = UserDefaults.standard
+    private static func bool(_ key: String, default val: Bool = true) -> Bool {
+        d.object(forKey: key) == nil ? val : d.bool(forKey: key)
+    }
+
+    static var behavioralRead: Bool {
+        get { bool("pref_behavioralRead", default: false) }
+        set { d.set(newValue, forKey: "pref_behavioralRead") }
+    }
+    static var upcomingMeetings: Bool {
+        get { bool("pref_upcomingMeetings") }
+        set { d.set(newValue, forKey: "pref_upcomingMeetings") }
+    }
+    static var preMeetingBriefs: Bool {
+        get { bool("pref_preMeetingBriefs") }
+        set { d.set(newValue, forKey: "pref_preMeetingBriefs") }
+    }
+    static var actionItems: Bool {
+        get { bool("pref_actionItems") }
+        set { d.set(newValue, forKey: "pref_actionItems") }
+    }
+    static var liveQuestions: Bool {
+        get { bool("pref_liveQuestions") }
+        set { d.set(newValue, forKey: "pref_liveQuestions") }
+    }
+    static var timestamps: Bool {
+        get { bool("pref_timestamps") }
+        set { d.set(newValue, forKey: "pref_timestamps") }
+    }
+}
+
+// --- Preferences Window ---
+final class PrefsController: NSObject {
+    var window: NSWindow?
+    var onClose: (() -> Void)?
+
+    struct Toggle {
+        let label: String
+        let desc: String
+        let get: () -> Bool
+        let set: (Bool) -> Void
+    }
+
+    let toggles: [Toggle] = [
+        Toggle(label: "Upcoming Meetings", desc: "Show today's remaining calendar events in the sidebar",
+               get: { Prefs.upcomingMeetings }, set: { Prefs.upcomingMeetings = $0 }),
+        Toggle(label: "Action Items", desc: "Show the commitment ledger pinned in the sidebar",
+               get: { Prefs.actionItems }, set: { Prefs.actionItems = $0 }),
+        Toggle(label: "Pre-meeting Briefs", desc: "Show AI-generated briefs before meetings",
+               get: { Prefs.preMeetingBriefs }, set: { Prefs.preMeetingBriefs = $0 }),
+        Toggle(label: "Behavioral Read", desc: "Show speaker behavioral analysis tabs on meeting transcripts",
+               get: { Prefs.behavioralRead }, set: { Prefs.behavioralRead = $0 }),
+        Toggle(label: "Live Questions", desc: "Show AI question suggestions during live recordings",
+               get: { Prefs.liveQuestions }, set: { Prefs.liveQuestions = $0 }),
+        Toggle(label: "Timestamps", desc: "Show timestamp markers in transcripts",
+               get: { Prefs.timestamps }, set: { Prefs.timestamps = $0 }),
+    ]
+
+    func show(onClose: @escaping () -> Void) {
+        self.onClose = onClose
+        if let w = window { w.makeKeyAndOrderFront(nil); return }
+
+        let w = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 0),
+            styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        w.title = "Preferences"
+        w.titlebarAppearsTransparent = true
+        w.backgroundColor = DS.cardWhite
+        w.isReleasedWhenClosed = false
+
+        let container = NSStackView()
+        container.orientation = .vertical
+        container.alignment = .leading
+        container.spacing = 0
+        container.edgeInsets = NSEdgeInsets(top: 24, left: 32, bottom: 24, right: 32)
+        container.translatesAutoresizingMaskIntoConstraints = false
+
+        // Header
+        let title = NSTextField(labelWithString: "Preferences")
+        title.font = DS.serif(size: 20)
+        title.textColor = DS.textPrimary
+        container.addArrangedSubview(title)
+        container.setCustomSpacing(6, after: title)
+
+        let subtitle = NSTextField(labelWithString: "Choose which features to show in the viewer.")
+        subtitle.font = DS.body(size: 12)
+        subtitle.textColor = DS.textSecondary
+        container.addArrangedSubview(subtitle)
+        container.setCustomSpacing(24, after: subtitle)
+
+        // Divider
+        let topDiv = NSBox(); topDiv.boxType = .separator
+        topDiv.translatesAutoresizingMaskIntoConstraints = false
+        container.addArrangedSubview(topDiv)
+        topDiv.widthAnchor.constraint(equalTo: container.widthAnchor, constant: -64).isActive = true
+        container.setCustomSpacing(16, after: topDiv)
+
+        for (i, toggle) in toggles.enumerated() {
+            let row = NSStackView()
+            row.orientation = .horizontal
+            row.alignment = .top
+            row.spacing = 12
+            row.translatesAutoresizingMaskIntoConstraints = false
+
+            let labels = NSStackView()
+            labels.orientation = .vertical
+            labels.alignment = .leading
+            labels.spacing = 2
+
+            let name = NSTextField(labelWithString: toggle.label)
+            name.font = DS.body(size: 13, weight: .medium)
+            name.textColor = DS.textPrimary
+            labels.addArrangedSubview(name)
+
+            let desc = NSTextField(wrappingLabelWithString: toggle.desc)
+            desc.font = DS.body(size: 11)
+            desc.textColor = DS.textSecondary
+            desc.preferredMaxLayoutWidth = 280
+            labels.addArrangedSubview(desc)
+
+            let sw = NSSwitch()
+            sw.state = toggle.get() ? .on : .off
+            sw.tag = i
+            sw.target = self
+            sw.action = #selector(toggleChanged(_:))
+            sw.controlSize = .small
+
+            row.addArrangedSubview(labels)
+            row.addArrangedSubview(sw)
+            labels.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+            container.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: container.widthAnchor, constant: -64).isActive = true
+            container.setCustomSpacing(i < toggles.count - 1 ? 16 : 0, after: row)
+        }
+
+        w.contentView = container
+        container.leadingAnchor.constraint(equalTo: w.contentView!.leadingAnchor).isActive = true
+        container.trailingAnchor.constraint(equalTo: w.contentView!.trailingAnchor).isActive = true
+        container.topAnchor.constraint(equalTo: w.contentView!.topAnchor).isActive = true
+        container.bottomAnchor.constraint(equalTo: w.contentView!.bottomAnchor).isActive = true
+
+        w.center()
+        w.makeKeyAndOrderFront(nil)
+        window = w
+
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification,
+            object: w, queue: .main) { [weak self] _ in self?.onClose?() }
+    }
+
+    @objc func toggleChanged(_ sender: NSSwitch) {
+        let i = sender.tag
+        guard i >= 0, i < toggles.count else { return }
+        toggles[i].set(sender.state == .on)
+    }
+}
+
+struct CalendarEvent {
+    let id: String
+    let summary: String
+    let startTime: Date
+    let endTime: Date
+    let meetLink: String
+    let attendees: [String]
+
+    var timeRange: String {
+        let f = DateFormatter(); f.dateFormat = "HH:mm"
+        return "\(f.string(from: startTime)) - \(f.string(from: endTime))"
+    }
+
+    var startsIn: String {
+        let mins = Int(startTime.timeIntervalSinceNow / 60)
+        if mins <= 0 { return "now" }
+        if mins < 60 { return "in \(mins)m" }
+        return "in \(mins / 60)h \(mins % 60)m"
+    }
+}
+
+// global store for upcoming event details (keyed by event id)
+var upcomingEvents: [String: CalendarEvent] = [:]
+
+func loadUpcomingEvents() -> [CalendarEvent] {
+    let cacheURL = stateDir.appendingPathComponent("events-cache.json")
+    guard let data = try? Data(contentsOf: cacheURL),
+          let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
+    let now = Date()
+    let cal = Calendar.current
+    var events: [CalendarEvent] = []
+    for obj in arr {
+        let evType = obj["eventType"] as? String ?? "default"
+        if evType != "default" { continue }
+        guard let start = obj["start"] as? [String: Any],
+              let dtStr = start["dateTime"] as? String else { continue }
+        guard let startDate = parseISO(dtStr) else { continue }
+        if !cal.isDateInToday(startDate) { continue }
+        if startDate < now { continue }
+        let end = obj["end"] as? [String: Any]
+        let endDate = (end?["dateTime"] as? String).flatMap(parseISO) ?? startDate
+        let summary = obj["summary"] as? String ?? "(no title)"
+        let id = obj["id"] as? String ?? UUID().uuidString
+        // meet link: hangoutLink or in conferenceData
+        var meetLink = obj["hangoutLink"] as? String ?? ""
+        if meetLink.isEmpty, let conf = obj["conferenceData"] as? [String: Any],
+           let eps = conf["entryPoints"] as? [[String: Any]] {
+            meetLink = eps.first { ($0["entryPointType"] as? String) == "video" }?["uri"] as? String ?? ""
+        }
+        // attendees
+        var attendees: [String] = []
+        if let atts = obj["attendees"] as? [[String: Any]] {
+            for a in atts {
+                if a["self"] as? Bool == true { continue }
+                let name = a["displayName"] as? String ?? (a["email"] as? String ?? "")
+                if !name.isEmpty { attendees.append(name) }
+            }
+        }
+        events.append(CalendarEvent(id: id, summary: summary, startTime: startDate,
+                                     endTime: endDate, meetLink: meetLink, attendees: attendees))
+    }
+    return events.sorted { $0.startTime < $1.startTime }
+}
+
+func parseISO(_ s: String) -> Date? {
+    // handles "+05:30" offset format from Google Calendar
+    let f = DateFormatter()
+    f.locale = Locale(identifier: "en_US_POSIX")
+    for fmt in ["yyyy-MM-dd'T'HH:mm:ssXXXXX", "yyyy-MM-dd'T'HH:mm:ssZ", "yyyy-MM-dd'T'HH:mm:ssXXX"] {
+        f.dateFormat = fmt
+        if let d = f.date(from: s) { return d }
+    }
+    return nil
+}
+
 struct Entry {
     let title: String
     let subtitle: String
@@ -43,6 +329,8 @@ struct Entry {
     var pinned: Bool = false
     var processing: Bool = false
     var failed: Bool = false
+    var upcoming: Bool = false
+    var eventId: String = ""
 }
 
 // Bases with a transcribe.sh currently running (same scan zaatarbar uses)
@@ -168,15 +456,28 @@ func loadEntries() -> [Entry] {
 
     // Pinned: commitment ledger (action items extracted from every meeting)
     let ledger = transcriptsDir.appendingPathComponent("ledger/commitments.md")
-    if let content = try? String(contentsOf: ledger, encoding: .utf8) {
+    if Prefs.actionItems, let content = try? String(contentsOf: ledger, encoding: .utf8) {
         let open = content.components(separatedBy: "\n").filter { $0.hasPrefix("- [ ]") }.count
         entries.append(Entry(title: "Action Items", subtitle: "\(open) open \u{00b7} commitment ledger",
                              url: ledger, isLive: false, mtime: .distantFuture, pinned: true))
     }
 
+    // Upcoming calendar events for today
+    upcomingEvents.removeAll()
+    let upcoming = Prefs.upcomingMeetings ? loadUpcomingEvents() : []
+    let dummyURL = stateDir.appendingPathComponent("events-cache.json")
+    for ev in upcoming {
+        upcomingEvents[ev.id] = ev
+        entries.append(Entry(title: ev.summary,
+                             subtitle: "\(ev.timeRange) \u{00b7} \(ev.startsIn)",
+                             url: dummyURL, isLive: false,
+                             mtime: Date(timeIntervalSince1970: ev.startTime.timeIntervalSince1970 + 2e9),
+                             upcoming: true, eventId: ev.id))
+    }
+
     // Pre-meeting briefs ("YYYY-MM-DD-slug-brief.md"), sorted in with transcripts
     let briefsDir = transcriptsDir.appendingPathComponent("briefs")
-    if let files = try? fm.contentsOfDirectory(at: briefsDir, includingPropertiesForKeys: [.contentModificationDateKey]) {
+    if Prefs.preMeetingBriefs, let files = try? fm.contentsOfDirectory(at: briefsDir, includingPropertiesForKeys: [.contentModificationDateKey]) {
         for f in files where f.pathExtension == "md" {
             var base = f.deletingPathExtension().lastPathComponent
             if base.hasSuffix("-brief") { base = String(base.dropLast(6)) }
@@ -215,6 +516,9 @@ func loadEntries() -> [Entry] {
         if $0.pinned != $1.pinned { return $0.pinned }
         let a = $0.processing || $0.failed, b = $1.processing || $1.failed
         if a != b { return a }
+        if $0.upcoming != $1.upcoming { return $0.upcoming }
+        // upcoming: sort by start time ascending (earliest first)
+        if $0.upcoming && $1.upcoming { return $0.mtime < $1.mtime }
         return $0.mtime > $1.mtime
     }
 }
@@ -244,16 +548,13 @@ var expandedTableCells = Set<String>()
 // click toggles - [ ] / - [x] in the file itself
 var checkboxLines: [String: String] = [:]
 
-// structured ledger: action-item index + assignee filter
-var ledgerItems: [String: ActionItem] = [:]
-var ledgerFilter: String = ""
-
+// Strip section headers (## ...) that have no items before the next header or EOF
 func stripOrphanHeaders(_ text: String) -> String {
     var result: [String] = []
     var pendingHeader: String? = nil
     for line in text.components(separatedBy: "\n") {
         if line.hasPrefix("## ") {
-            pendingHeader = line
+            pendingHeader = line // hold until we see an item
         } else if line.hasPrefix("- [") {
             if let h = pendingHeader { result.append(h); pendingHeader = nil }
             result.append(line)
@@ -264,6 +565,7 @@ func stripOrphanHeaders(_ text: String) -> String {
             result.append(line)
         }
     }
+    // collapse multiple blank lines
     var cleaned: [String] = []
     var lastBlank = false
     for line in result {
@@ -272,6 +574,7 @@ func stripOrphanHeaders(_ text: String) -> String {
         cleaned.append(line)
         lastBlank = blank
     }
+    // trim trailing blanks
     while cleaned.last?.trimmingCharacters(in: .whitespaces).isEmpty == true { cleaned.removeLast() }
     return cleaned.joined(separator: "\n") + "\n"
 }
@@ -326,6 +629,9 @@ struct ActionItem {
     }
 }
 
+var ledgerItems: [String: ActionItem] = [:]
+var ledgerFilter: String = ""
+
 func parseActionItems(_ content: String) -> [ActionItem] {
     var items: [ActionItem] = []
     for line in content.components(separatedBy: "\n") {
@@ -370,14 +676,17 @@ func renderLedger(_ content: String, url: URL) -> NSMutableAttributedString {
         .overdue: "OVERDUE", .dueSoon: "DUE SOON", .upcoming: "UPCOMING",
         .noDue: "NO DUE DATE", .done: "DONE"]
     let groupColors: [ActionItem.Group: NSColor] = [
-        .overdue: .systemRed, .dueSoon: .systemOrange, .upcoming: .controlAccentColor,
-        .noDue: .secondaryLabelColor, .done: .tertiaryLabelColor]
+        .overdue: DS.paleRedText, .dueSoon: DS.paleYellowText, .upcoming: DS.paleBlueText,
+        .noDue: DS.textTertiary, .done: DS.paleGreenText]
+    let groupBadgeBg: [ActionItem.Group: NSColor] = [
+        .overdue: DS.paleRedBg, .dueSoon: DS.paleYellowBg, .upcoming: DS.paleBlueBg,
+        .noDue: DS.surface, .done: DS.paleGreenBg]
 
     // Title
     let titlePS = NSMutableParagraphStyle(); titlePS.paragraphSpacing = 4
     doc.append(NSAttributedString(string: "Action Items\n",
-        attributes: [.font: NSFont.systemFont(ofSize: 22, weight: .semibold),
-                     .foregroundColor: NSColor.labelColor, .kern: NSNumber(value: -0.4), .paragraphStyle: titlePS]))
+        attributes: [.font: DS.serif(size: 24),
+                     .foregroundColor: DS.textPrimary, .kern: NSNumber(value: -0.6), .paragraphStyle: titlePS]))
 
     // Summary
     let openCount = allItems.filter { !$0.checked }.count
@@ -385,7 +694,7 @@ func renderLedger(_ content: String, url: URL) -> NSMutableAttributedString {
     var summary = "\(openCount) open"
     if overdueCount > 0 { summary += " \u{00B7} \(overdueCount) overdue" }
     doc.append(NSAttributedString(string: summary + "\n",
-        attributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.secondaryLabelColor]))
+        attributes: [.font: DS.body(size: 12), .foregroundColor: DS.textSecondary]))
 
     // Assignee filter bar
     let assignees = Array(Set(allItems.flatMap { [$0.owner, $0.recipient] }
@@ -393,20 +702,20 @@ func renderLedger(_ content: String, url: URL) -> NSMutableAttributedString {
     if !assignees.isEmpty {
         let fPS = NSMutableParagraphStyle(); fPS.paragraphSpacingBefore = 8; fPS.paragraphSpacing = 12
         doc.append(NSAttributedString(string: "Filter: ",
-            attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.tertiaryLabelColor, .paragraphStyle: fPS]))
+            attributes: [.font: DS.body(size: 11), .foregroundColor: DS.textTertiary, .paragraphStyle: fPS]))
         let allLink: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 11, weight: ledgerFilter.isEmpty ? .semibold : .regular),
-            .foregroundColor: ledgerFilter.isEmpty ? NSColor.controlAccentColor : NSColor.secondaryLabelColor,
+            .font: DS.body(size: 11, weight: ledgerFilter.isEmpty ? .semibold : .regular),
+            .foregroundColor: ledgerFilter.isEmpty ? DS.textPrimary : DS.textSecondary,
             .link: URL(string: "zaatar-filter://all")! as Any]
         doc.append(NSAttributedString(string: "All", attributes: allLink))
         for a in assignees {
             let enc = a.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed) ?? a
             let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 11, weight: ledgerFilter == a ? .semibold : .regular),
-                .foregroundColor: ledgerFilter == a ? NSColor.controlAccentColor : NSColor.secondaryLabelColor,
+                .font: DS.body(size: 11, weight: ledgerFilter == a ? .semibold : .regular),
+                .foregroundColor: ledgerFilter == a ? DS.textPrimary : DS.textSecondary,
                 .link: URL(string: "zaatar-filter://\(enc)")! as Any]
-            doc.append(NSAttributedString(string: "  \u{00B7}  ", attributes: [.font: NSFont.systemFont(ofSize: 11),
-                .foregroundColor: NSColor.tertiaryLabelColor]))
+            doc.append(NSAttributedString(string: "  \u{00B7}  ", attributes: [.font: DS.body(size: 11),
+                .foregroundColor: DS.textTertiary]))
             doc.append(NSAttributedString(string: a, attributes: attrs))
         }
         doc.append(NSAttributedString(string: "\n", attributes: [:]))
@@ -423,49 +732,51 @@ func renderLedger(_ content: String, url: URL) -> NSMutableAttributedString {
         let color = groupColors[group] ?? .labelColor
         let label = groupLabels[group] ?? ""
 
-        // Group header
-        let ghPS = NSMutableParagraphStyle(); ghPS.paragraphSpacingBefore = 20; ghPS.paragraphSpacing = 6
+        // Group header - pill badge style
+        let ghPS = NSMutableParagraphStyle(); ghPS.paragraphSpacingBefore = 24; ghPS.paragraphSpacing = 8
         doc.append(NSAttributedString(string: "\(label)  \(groupItems.count)\n",
-            attributes: [.font: NSFont.systemFont(ofSize: 11, weight: .bold),
-                         .foregroundColor: color, .kern: NSNumber(value: 1.0), .paragraphStyle: ghPS]))
+            attributes: [.font: DS.body(size: 10, weight: .bold),
+                         .foregroundColor: color,
+                         .backgroundColor: groupBadgeBg[group] ?? DS.surface,
+                         .kern: NSNumber(value: 0.8), .paragraphStyle: ghPS]))
 
         for item in groupItems {
             let key = String(UInt(bitPattern: item.rawLine.hashValue))
             ledgerItems[key] = item
             checkboxLines[key] = item.rawLine
 
-            let bodyPS = NSMutableParagraphStyle(); bodyPS.lineHeightMultiple = 1.3; bodyPS.paragraphSpacing = 2
+            let bodyPS = NSMutableParagraphStyle(); bodyPS.lineHeightMultiple = 1.45; bodyPS.paragraphSpacing = 2
             let body: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.labelColor, .paragraphStyle: bodyPS]
+                .font: DS.body(size: 13), .foregroundColor: DS.textPrimary, .paragraphStyle: bodyPS]
 
             // Checkbox
             var cb = body; cb[.link] = URL(string: "zaatar-check://\(key)")!
-            cb[.font] = NSFont.systemFont(ofSize: 14, weight: .medium)
-            cb[.foregroundColor] = item.checked ? NSColor.tertiaryLabelColor : NSColor.controlAccentColor
+            cb[.font] = DS.body(size: 14, weight: .medium)
+            cb[.foregroundColor] = item.checked ? DS.textTertiary : DS.brandGreen
             doc.append(NSAttributedString(string: item.checked ? "\u{2611} " : "\u{2610} ", attributes: cb))
 
             // Text (clickable to edit)
             var ta = body; ta[.link] = URL(string: "zaatar-edittext://\(key)")!
-            ta[.font] = NSFont.systemFont(ofSize: 13, weight: .medium)
+            ta[.font] = DS.body(size: 13, weight: .medium)
             ta[.cursor] = NSCursor.pointingHand
-            if item.checked { ta[.foregroundColor] = NSColor.tertiaryLabelColor
+            if item.checked { ta[.foregroundColor] = DS.textTertiary
                 ta[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
             doc.append(NSAttributedString(string: item.text, attributes: ta))
 
             // Delete
             var del = body; del[.link] = URL(string: "zaatar-delete://\(key)")!
-            del[.font] = NSFont.systemFont(ofSize: 11); del[.foregroundColor] = NSColor.tertiaryLabelColor
+            del[.font] = DS.body(size: 11); del[.foregroundColor] = DS.textTertiary
             doc.append(NSAttributedString(string: "  \u{00D7}\n", attributes: del))
 
             // Second line: assignee (clickable) + due (clickable) + source
-            let metaPS = NSMutableParagraphStyle(); metaPS.firstLineHeadIndent = 22; metaPS.paragraphSpacing = 14
+            let metaPS = NSMutableParagraphStyle(); metaPS.firstLineHeadIndent = 22; metaPS.paragraphSpacing = 16
             let meta: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: metaPS]
+                .font: DS.body(size: 11), .foregroundColor: DS.textSecondary, .paragraphStyle: metaPS]
             var oa = meta; oa[.link] = URL(string: "zaatar-editowner://\(key)")!
             doc.append(NSAttributedString(string: item.assigneeDisplay, attributes: oa))
             doc.append(NSAttributedString(string: "  \u{00B7}  ", attributes: meta))
             var da = meta; da[.link] = URL(string: "zaatar-editdue://\(key)")!
-            if group == .overdue { da[.foregroundColor] = NSColor.systemRed }
+            if group == .overdue { da[.foregroundColor] = DS.paleRedText }
             doc.append(NSAttributedString(string: item.duePretty, attributes: da))
             doc.append(NSAttributedString(string: "  \u{00B7}  \(item.srcPretty)\n", attributes: meta))
         }
@@ -473,7 +784,7 @@ func renderLedger(_ content: String, url: URL) -> NSMutableAttributedString {
 
     if allItems.isEmpty {
         doc.append(NSAttributedString(string: "\nNo action items yet. Items are extracted from meeting transcripts automatically.\n",
-            attributes: [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.secondaryLabelColor]))
+            attributes: [.font: DS.body(size: 13), .foregroundColor: DS.textSecondary]))
     }
     return doc
 }
@@ -494,8 +805,8 @@ func appendTable(_ rowLines: [String], to out: NSMutableAttributedString) {
             // editorial style: horizontal hairlines only, no grid, no header fill
             if r < lastRow {
                 block.setBorderColor(r == 0
-                    ? NSColor.separatorColor
-                    : NSColor.separatorColor.withAlphaComponent(0.5), for: .maxY)
+                    ? DS.border
+                    : DS.divider, for: .maxY)
                 block.setWidth(r == 0 ? 1 : 0.5, type: .absoluteValueType,
                                for: .border, edge: .maxY)
             }
@@ -508,23 +819,23 @@ func appendTable(_ rowLines: [String], to out: NSMutableAttributedString) {
             ps.lineHeightMultiple = 1.15
             if r == 0 {
                 let attrs: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.systemFont(ofSize: 10.5, weight: .semibold),
-                    .foregroundColor: NSColor.secondaryLabelColor,
-                    .kern: 0.6,
+                    .font: DS.body(size: 10.5, weight: .semibold),
+                    .foregroundColor: DS.textSecondary,
+                    .kern: 0.8,
                     .paragraphStyle: ps,
                 ]
                 out.append(NSAttributedString(string: cell.uppercased() + "\n", attributes: attrs))
             } else {
                 let attrs: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.systemFont(ofSize: 12),
-                    .foregroundColor: NSColor.labelColor,
+                    .font: DS.body(size: 12),
+                    .foregroundColor: DS.textPrimary,
                     .paragraphStyle: ps,
                 ]
                 let key = String(UInt(bitPattern: cell.hashValue))
                 let isLong = cell.count > 90
                 var linkAttrs = attrs
-                linkAttrs[.font] = NSFont.systemFont(ofSize: 11, weight: .medium)
-                linkAttrs[.foregroundColor] = NSColor.controlAccentColor
+                linkAttrs[.font] = DS.body(size: 11, weight: .medium)
+                linkAttrs[.foregroundColor] = DS.paleBlueText
                 linkAttrs[.link] = URL(string: "zaatar-toggle://\(key)")!
                 if isLong && !expandedTableCells.contains(key) {
                     let cut = String(cell.prefix(88))
@@ -648,48 +959,63 @@ func inlineStyled(_ line: String, base: [NSAttributedString.Key: Any]) -> NSAttr
 func styled(_ text: String, isLive: Bool, questions: [String] = []) -> NSAttributedString {
     let out = NSMutableAttributedString()
     let mono: [NSAttributedString.Key: Any] = [
-        .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
-        .foregroundColor: NSColor.labelColor,
+        .font: DS.mono(size: 12),
+        .foregroundColor: DS.textPrimary,
     ]
     if isLive {
+        let livePS = NSMutableParagraphStyle(); livePS.paragraphSpacing = 4
         out.append(NSAttributedString(
-            string: "ROUGH LIVE PREVIEW (small model, expect errors) - the accurate transcript is generated after the recording stops\n\n",
-            attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .bold),
-                         .foregroundColor: NSColor.systemOrange]))
+            string: "ROUGH LIVE PREVIEW\n",
+            attributes: [.font: DS.body(size: 10, weight: .bold),
+                         .foregroundColor: DS.paleYellowText,
+                         .backgroundColor: DS.paleYellowBg,
+                         .kern: NSNumber(value: 0.8),
+                         .paragraphStyle: livePS]))
+        let liveSubPS = NSMutableParagraphStyle(); liveSubPS.paragraphSpacing = 12
+        out.append(NSAttributedString(
+            string: "Small model, expect errors. Accurate transcript generated after recording stops.\n\n",
+            attributes: [.font: DS.body(size: 11),
+                         .foregroundColor: DS.textSecondary,
+                         .paragraphStyle: liveSubPS]))
         out.append(NSAttributedString(string: text, attributes: mono))
         // AI question suggestions (live-questions.sh); rendered at the end so
         // the live view's auto-scroll keeps them on screen
         if !questions.isEmpty {
+            let qhPS = NSMutableParagraphStyle(); qhPS.paragraphSpacingBefore = 20; qhPS.paragraphSpacing = 6
             out.append(NSAttributedString(
                 string: "\nQUESTIONS YOU COULD ASK\n",
-                attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .bold),
-                             .foregroundColor: NSColor.systemTeal]))
+                attributes: [.font: DS.body(size: 10, weight: .bold),
+                             .foregroundColor: DS.paleBlueText,
+                             .kern: NSNumber(value: 0.8),
+                             .paragraphStyle: qhPS]))
+            let qPS = NSMutableParagraphStyle(); qPS.lineHeightMultiple = 1.5
             for q in questions {
                 out.append(NSAttributedString(
                     string: "\u{2022}  \(q)\n",
-                    attributes: [.font: NSFont.systemFont(ofSize: 13),
-                                 .foregroundColor: NSColor.systemTeal]))
+                    attributes: [.font: DS.body(size: 13),
+                                 .foregroundColor: DS.paleBlueText,
+                                 .paragraphStyle: qPS]))
             }
         }
         return out
     }
-    // editorial body: relaxed line height, quiet paragraph rhythm
+    // editorial body: generous line height, quiet paragraph rhythm
     let bodyPS = NSMutableParagraphStyle()
-    bodyPS.lineHeightMultiple = 1.3
-    bodyPS.paragraphSpacing = 5
+    bodyPS.lineHeightMultiple = 1.5
+    bodyPS.paragraphSpacing = 6
     let body: [NSAttributedString.Key: Any] = [
-        .font: NSFont.systemFont(ofSize: 13),
-        .foregroundColor: NSColor.labelColor,
+        .font: DS.body(size: 13),
+        .foregroundColor: DS.textPrimary,
         .paragraphStyle: bodyPS,
     ]
-    // headers: tight tracking, air above, little below
+    // headers: system serif, tight tracking, air above, little below
     func header(_ size: CGFloat) -> [NSAttributedString.Key: Any] {
         let ps = NSMutableParagraphStyle()
-        ps.paragraphSpacingBefore = size >= 15 ? 24 : 14
-        ps.paragraphSpacing = 6
-        return [.font: NSFont.systemFont(ofSize: size, weight: .semibold),
-                .foregroundColor: NSColor.labelColor,
-                .kern: -0.2,
+        ps.paragraphSpacingBefore = size >= 15 ? 28 : 16
+        ps.paragraphSpacing = 8
+        return [.font: DS.serif(size: size),
+                .foregroundColor: DS.textPrimary,
+                .kern: size >= 15 ? -0.4 : -0.2,
                 .paragraphStyle: ps]
     }
     var inFence = false
@@ -729,16 +1055,17 @@ func styled(_ text: String, isLive: Bool, questions: [String] = []) -> NSAttribu
             i += 1; continue
         }
         // transcript timestamp lines "**[00:02:15]**" -> quiet mono meta-line
-        if line.trimmingCharacters(in: .whitespaces).range(
+        if Prefs.timestamps, line.trimmingCharacters(in: .whitespaces).range(
             of: #"^\*\*\[\d{1,2}:\d{2}(:\d{2})?\]\*\*$"#, options: .regularExpression) != nil {
             let ts = line.trimmingCharacters(in: .whitespaces)
                 .replacingOccurrences(of: "**", with: "")
             let ps = NSMutableParagraphStyle()
-            ps.paragraphSpacingBefore = 16
-            ps.paragraphSpacing = 3
+            ps.paragraphSpacingBefore = 20
+            ps.paragraphSpacing = 4
             out.append(NSAttributedString(string: ts + "\n", attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: 10.5, weight: .medium),
-                .foregroundColor: NSColor.tertiaryLabelColor,
+                .font: DS.mono(size: 10, weight: .medium),
+                .foregroundColor: DS.textTertiary,
+                .kern: NSNumber(value: 0.5),
                 .paragraphStyle: ps]))
             i += 1; continue
         }
@@ -751,20 +1078,20 @@ func styled(_ text: String, isLive: Bool, questions: [String] = []) -> NSAttribu
             checkboxLines[key] = line
             var glyph = body
             glyph[.link] = URL(string: "zaatar-check://\(key)")!
-            glyph[.font] = NSFont.systemFont(ofSize: 13, weight: .medium)
-            glyph[.foregroundColor] = done ? NSColor.tertiaryLabelColor : NSColor.controlAccentColor
+            glyph[.font] = DS.body(size: 13, weight: .medium)
+            glyph[.foregroundColor] = done ? DS.textTertiary : DS.brandGreen
             out.append(NSAttributedString(string: done ? "\u{2611} " : "\u{2610} ", attributes: glyph))
             var restAttrs = body
             if done {
-                restAttrs[.foregroundColor] = NSColor.tertiaryLabelColor
+                restAttrs[.foregroundColor] = DS.textTertiary
                 restAttrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
             }
             out.append(inlineStyled(rest, base: restAttrs))
             // quiet trailing delete affordance: removes the line from the file
             var del = body
             del[.link] = URL(string: "zaatar-delete://\(key)")!
-            del[.font] = NSFont.systemFont(ofSize: 11, weight: .medium)
-            del[.foregroundColor] = NSColor.tertiaryLabelColor
+            del[.font] = DS.body(size: 11, weight: .medium)
+            del[.foregroundColor] = DS.textTertiary
             out.append(NSAttributedString(string: "  \u{00D7}", attributes: del))
             out.append(NSAttributedString(string: "\n", attributes: body))
             i += 1; continue
@@ -774,16 +1101,17 @@ func styled(_ text: String, isLive: Bool, questions: [String] = []) -> NSAttribu
             out.append(NSAttributedString(string: line + "\n", attributes: header(18)))
             i += 1; continue
         }
-        // blockquote: indented, secondary color
+        // blockquote: indented, secondary color, left border feel via indent
         if line.hasPrefix(">") {
             let inner = line.hasPrefix("> ") ? String(line.dropFirst(2)) : String(line.dropFirst(1))
             let ps = NSMutableParagraphStyle()
-            ps.headIndent = 16
-            ps.firstLineHeadIndent = 16
-            ps.lineHeightMultiple = 1.25
-            ps.paragraphSpacing = 3
+            ps.headIndent = 20
+            ps.firstLineHeadIndent = 20
+            ps.lineHeightMultiple = 1.4
+            ps.paragraphSpacing = 4
             var q = body
-            q[.foregroundColor] = NSColor.secondaryLabelColor
+            q[.foregroundColor] = DS.textSecondary
+            q[.font] = DS.serif(size: 13, weight: .regular)
             q[.paragraphStyle] = ps
             out.append(inlineStyled(inner, base: q))
             out.append(NSAttributedString(string: "\n", attributes: q))
@@ -923,6 +1251,12 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
         showSelection(scrollToEnd: false)
     }
 
+    let prefsController = PrefsController()
+
+    @objc func openPrefs() {
+        prefsController.show { [weak self] in self?.reload() }
+    }
+
     var all: [Entry] = []
     var rows: [Row] = []
     let table = NSTableView()
@@ -978,6 +1312,7 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
         if e.isLive { return "Live" }
         if e.pinned { return "Pinned" }
         if e.processing || e.failed { return "Processing" }
+        if e.upcoming { return "Upcoming" }
         if e.title.hasPrefix("Brief: ") { return "Pre-meeting briefs" }
         let cal = Calendar.current
         if cal.isDateInToday(e.mtime) { return "Today" }
@@ -1019,22 +1354,23 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
     }
 
     func icon(for e: Entry) -> (String, NSColor) {
-        if e.isLive { return ("record.circle", .systemRed) }
-        if e.pinned { return ("checklist", .systemOrange) }
-        if e.processing { return ("arrow.triangle.2.circlepath", .systemOrange) }
-        if e.failed { return ("exclamationmark.triangle.fill", .systemRed) }
-        if e.title.hasPrefix("Brief: ") { return ("doc.badge.clock", .systemTeal) }
-        return ("text.bubble", .secondaryLabelColor)
+        if e.isLive { return ("record.circle", DS.paleRedText) }
+        if e.pinned { return ("checklist", DS.paleYellowText) }
+        if e.processing { return ("arrow.triangle.2.circlepath", DS.paleYellowText) }
+        if e.failed { return ("exclamationmark.triangle.fill", DS.paleRedText) }
+        if e.upcoming { return ("calendar.badge.clock", DS.brandGreen) }
+        if e.title.hasPrefix("Brief: ") { return ("doc.badge.clock", DS.paleBlueText) }
+        return ("text.bubble", DS.textTertiary)
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         switch rows[row] {
         case .header(let name):
             let t = NSTextField(labelWithString: name.uppercased())
-            t.font = .systemFont(ofSize: 10, weight: .semibold)
-            t.textColor = .tertiaryLabelColor
+            t.font = DS.body(size: 10, weight: .semibold)
+            t.textColor = DS.textTertiary
             let cell = NSStackView(views: [t])
-            cell.edgeInsets = NSEdgeInsets(top: 8, left: 6, bottom: 2, right: 6)
+            cell.edgeInsets = NSEdgeInsets(top: 12, left: 8, bottom: 3, right: 8)
             return cell
         case .entry(let e):
             var title = e.title
@@ -1043,35 +1379,35 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
             let iv = NSImageView()
             if let img = NSImage(systemSymbolName: sym, accessibilityDescription: nil) {
                 iv.image = img
-                iv.symbolConfiguration = .init(pointSize: 13, weight: .regular)
+                iv.symbolConfiguration = .init(pointSize: 12, weight: .regular)
                 iv.contentTintColor = tint
             }
             iv.translatesAutoresizingMaskIntoConstraints = false
             iv.widthAnchor.constraint(equalToConstant: 20).isActive = true
             let t = NSTextField(labelWithString: title)
-            t.font = .systemFont(ofSize: 13, weight: e.isLive ? .bold : .medium)
-            t.textColor = e.isLive ? .systemRed : .labelColor
+            t.font = DS.body(size: 13, weight: e.isLive ? .semibold : .medium)
+            t.textColor = e.isLive ? DS.paleRedText : DS.textPrimary
             t.lineBreakMode = .byTruncatingTail
             let s = NSTextField(labelWithString: e.subtitle)
-            s.font = .systemFont(ofSize: 11)
-            s.textColor = .secondaryLabelColor
+            s.font = DS.body(size: 11)
+            s.textColor = DS.textSecondary
             s.lineBreakMode = .byTruncatingTail
             let labels = NSStackView(views: [t, s])
             labels.orientation = .vertical
             labels.alignment = .leading
-            labels.spacing = 1
+            labels.spacing = 2
             let cell = NSStackView(views: [iv, labels])
             cell.orientation = .horizontal
             cell.alignment = .centerY
-            cell.spacing = 4
-            cell.edgeInsets = NSEdgeInsets(top: 4, left: 4, bottom: 4, right: 6)
+            cell.spacing = 6
+            cell.edgeInsets = NSEdgeInsets(top: 6, left: 8, bottom: 6, right: 8)
             return cell
         }
     }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        if case .header = rows[row] { return 24 }
-        return 44
+        if case .header = rows[row] { return 28 }
+        return 50
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -1100,25 +1436,112 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
             setTabsVisible(false)
             let doc = NSMutableAttributedString()
             let titlePS = NSMutableParagraphStyle()
-            titlePS.paragraphSpacing = 3
+            titlePS.paragraphSpacing = 4
             doc.append(NSAttributedString(string: e.title + "\n",
-                attributes: [.font: NSFont.systemFont(ofSize: 22, weight: .semibold),
-                             .foregroundColor: NSColor.labelColor,
-                             .kern: -0.4,
+                attributes: [.font: DS.serif(size: 24),
+                             .foregroundColor: DS.textPrimary,
+                             .kern: NSNumber(value: -0.6),
                              .paragraphStyle: titlePS]))
             doc.append(NSAttributedString(string: e.subtitle + "\n\n",
-                attributes: [.font: NSFont.systemFont(ofSize: 12),
-                             .foregroundColor: NSColor.secondaryLabelColor]))
+                attributes: [.font: DS.body(size: 12),
+                             .foregroundColor: DS.textSecondary]))
             let msg = e.processing
-                ? "In progress - no details available yet. The transcript will appear here when processing finishes."
-                : "Transcription did not complete. Retry from the Zaatar menu bar (FAILED entry)."
+                ? "In progress. The transcript will appear here when processing finishes."
+                : "Transcription did not complete. Retry from the Zaatar menu bar."
             doc.append(NSAttributedString(string: msg,
-                attributes: [.font: NSFont.systemFont(ofSize: 13),
-                             .foregroundColor: NSColor.secondaryLabelColor]))
+                attributes: [.font: DS.body(size: 13),
+                             .foregroundColor: DS.textSecondary]))
             textView.textStorage?.setAttributedString(doc)
             textView.scroll(.zero)
             return
         }
+        // Upcoming calendar event detail view
+        if e.upcoming, let ev = upcomingEvents[e.eventId] {
+            selectedURL = e.url
+            tabs = []
+            setTabsVisible(false)
+            let doc = NSMutableAttributedString()
+            let titlePS = NSMutableParagraphStyle(); titlePS.paragraphSpacing = 4
+            doc.append(NSAttributedString(string: ev.summary + "\n",
+                attributes: [.font: DS.serif(size: 24),
+                             .foregroundColor: DS.textPrimary,
+                             .kern: NSNumber(value: -0.6),
+                             .paragraphStyle: titlePS]))
+
+            // Time badge
+            let timePS = NSMutableParagraphStyle(); timePS.paragraphSpacing = 16
+            doc.append(NSAttributedString(string: "\(ev.timeRange)  \u{00b7}  \(ev.startsIn)\n",
+                attributes: [.font: DS.mono(size: 12, weight: .medium),
+                             .foregroundColor: DS.brandGreen,
+                             .paragraphStyle: timePS]))
+
+            // Attendees
+            if !ev.attendees.isEmpty {
+                let secPS = NSMutableParagraphStyle(); secPS.paragraphSpacingBefore = 12; secPS.paragraphSpacing = 6
+                doc.append(NSAttributedString(string: "ATTENDEES\n",
+                    attributes: [.font: DS.body(size: 10, weight: .bold),
+                                 .foregroundColor: DS.textTertiary,
+                                 .kern: NSNumber(value: 0.8),
+                                 .paragraphStyle: secPS]))
+                let attPS = NSMutableParagraphStyle(); attPS.lineHeightMultiple = 1.6
+                for a in ev.attendees {
+                    doc.append(NSAttributedString(string: "\u{2022}  \(a)\n",
+                        attributes: [.font: DS.body(size: 13),
+                                     .foregroundColor: DS.textPrimary,
+                                     .paragraphStyle: attPS]))
+                }
+            }
+
+            // Meet link
+            if !ev.meetLink.isEmpty {
+                let linkPS = NSMutableParagraphStyle(); linkPS.paragraphSpacingBefore = 16
+                doc.append(NSAttributedString(string: "JOIN MEETING\n",
+                    attributes: [.font: DS.body(size: 10, weight: .bold),
+                                 .foregroundColor: DS.textTertiary,
+                                 .kern: NSNumber(value: 0.8),
+                                 .paragraphStyle: linkPS]))
+                let lPS = NSMutableParagraphStyle(); lPS.paragraphSpacingBefore = 4
+                doc.append(NSAttributedString(string: ev.meetLink + "\n",
+                    attributes: [.font: DS.mono(size: 12),
+                                 .foregroundColor: DS.paleBlueText,
+                                 .link: URL(string: ev.meetLink)! as Any,
+                                 .paragraphStyle: lPS]))
+            }
+
+            // Check for pre-meeting brief
+            let briefsDir = transcriptsDir.appendingPathComponent("briefs")
+            let bdf = DateFormatter(); bdf.dateFormat = "yyyy-MM-dd"
+            let dayStr = bdf.string(from: ev.startTime)
+            let slug = ev.summary.lowercased()
+                .replacingOccurrences(of: #"[^a-z0-9]+"#, with: "-", options: .regularExpression)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+                .prefix(40)
+            let briefPath = briefsDir.appendingPathComponent("\(dayStr)-\(slug)-brief.md")
+            if FileManager.default.fileExists(atPath: briefPath.path),
+               let brief = try? String(contentsOf: briefPath, encoding: .utf8),
+               !brief.isEmpty {
+                let bPS = NSMutableParagraphStyle(); bPS.paragraphSpacingBefore = 24; bPS.paragraphSpacing = 8
+                doc.append(NSAttributedString(string: "PRE-MEETING BRIEF\n",
+                    attributes: [.font: DS.body(size: 10, weight: .bold),
+                                 .foregroundColor: DS.textTertiary,
+                                 .kern: NSNumber(value: 0.8),
+                                 .paragraphStyle: bPS]))
+                doc.append(styled(brief, isLive: false))
+            }
+
+            if ev.attendees.isEmpty && ev.meetLink.isEmpty {
+                let emptyPS = NSMutableParagraphStyle(); emptyPS.paragraphSpacingBefore = 16
+                doc.append(NSAttributedString(string: "No additional details available for this event.\n",
+                    attributes: [.font: DS.body(size: 13),
+                                 .foregroundColor: DS.textSecondary,
+                                 .paragraphStyle: emptyPS]))
+            }
+
+            textView.textStorage?.setAttributedString(doc)
+            textView.scroll(.zero)
+            return
+        }
+
         let urlChanged = selectedURL != e.url
         selectedURL = e.url
         selectedFileMtime = ((try? FileManager.default.attributesOfItem(atPath: e.url.path))?[.modificationDate] as? Date) ?? .distantPast
@@ -1137,7 +1560,7 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
         let display = content.isEmpty && e.isLive
             ? "Waiting for the first live chunk (~30s of audio)..." : content
         var questions: [String] = []
-        if e.isLive {
+        if e.isLive, Prefs.liveQuestions {
             let qURL = stateDir.appendingPathComponent(
                 e.url.lastPathComponent
                     .replacingOccurrences(of: "live-", with: "questions-"))
@@ -1149,8 +1572,9 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
         }
         // tabbed reading pane: sectioned docs get a segmented control
         tabs = e.isLive ? [] : buildTabs(content)
+        if !Prefs.behavioralRead { tabs.removeAll { $0.0 == "Behavioral Read" } }
         // merge the emotional-eval sibling as extra tabs on the meeting entry
-        if !e.isLive, !e.url.lastPathComponent.hasSuffix("-behavioral.md") {
+        if Prefs.behavioralRead, !e.isLive, !e.url.lastPathComponent.hasSuffix("-behavioral.md") {
             let behURL = URL(fileURLWithPath: String(e.url.path.dropLast(3)) + "-behavioral.md")
             if let beh = try? String(contentsOf: behURL, encoding: .utf8) {
                 let extra = evalTabs(beh)
@@ -1176,16 +1600,17 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
             var title = e.title
             if title.hasPrefix("Brief: ") { title = String(title.dropFirst(7)) }
             let titlePS = NSMutableParagraphStyle()
-            titlePS.paragraphSpacing = 3
+            titlePS.paragraphSpacing = 4
             doc.append(NSAttributedString(string: title + "\n",
-                attributes: [.font: NSFont.systemFont(ofSize: 22, weight: .semibold),
-                             .foregroundColor: NSColor.labelColor,
-                             .kern: -0.4,
+                attributes: [.font: DS.serif(size: 24),
+                             .foregroundColor: DS.textPrimary,
+                             .kern: NSNumber(value: -0.6),
                              .paragraphStyle: titlePS]))
             if !e.subtitle.isEmpty {
                 doc.append(NSAttributedString(string: e.subtitle + "\n",
-                    attributes: [.font: NSFont.systemFont(ofSize: 12),
-                                 .foregroundColor: NSColor.secondaryLabelColor]))
+                    attributes: [.font: DS.mono(size: 11),
+                                 .foregroundColor: DS.textTertiary,
+                                 .kern: NSNumber(value: 0.3)]))
             }
             doc.append(NSAttributedString(string: "\n"))
         }
@@ -1249,6 +1674,9 @@ let appMenuItem = NSMenuItem()
 mainMenu.addItem(appMenuItem)
 let appMenu = NSMenu()
 appMenu.addItem(NSMenuItem(title: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"))
+appMenu.addItem(NSMenuItem.separator())
+let prefsItem = NSMenuItem(title: "Preferences...", action: #selector(ViewerController.openPrefs), keyEquivalent: ",")
+appMenu.addItem(prefsItem)
 appMenu.addItem(NSMenuItem(title: "Quit Zaatar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
 appMenuItem.submenu = appMenu
 let editMenuItem = NSMenuItem()
@@ -1260,13 +1688,16 @@ editMenuItem.submenu = editMenu
 app.mainMenu = mainMenu
 
 let controller = ViewerController()
+prefsItem.target = controller
 
 let window = NSWindow(
-    contentRect: NSRect(x: 0, y: 0, width: 940, height: 620),
+    contentRect: NSRect(x: 0, y: 0, width: 1000, height: 660),
     styleMask: [.titled, .closable, .miniaturizable, .resizable],
     backing: .buffered, defer: false
 )
 window.title = "Zaatar"
+window.backgroundColor = DS.cardWhite
+window.titlebarAppearsTransparent = true
 // leaf branding in the titlebar (document-icon slot, tinted green)
 window.representedURL = URL(fileURLWithPath: "/")
 if let leaf = NSImage(systemSymbolName: "leaf.fill", accessibilityDescription: "Zaatar")?
@@ -1280,7 +1711,8 @@ window.delegate = controller
 window.center()
 
 // left pane: search + table
-controller.search.placeholderString = "Search meetings, briefs, action items"
+controller.search.placeholderString = "Search"
+controller.search.font = DS.body(size: 12)
 controller.search.delegate = controller
 
 let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("main"))
@@ -1298,20 +1730,23 @@ tableScroll.drawsBackground = false
 
 let leftStack = NSStackView(views: [controller.search, tableScroll])
 leftStack.orientation = .vertical
-leftStack.spacing = 8
-leftStack.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 4)
+leftStack.spacing = 10
+leftStack.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 4)
 leftStack.translatesAutoresizingMaskIntoConstraints = false
-leftStack.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
+leftStack.wantsLayer = true
+leftStack.layer?.backgroundColor = DS.sidebarBg.cgColor
+leftStack.widthAnchor.constraint(greaterThanOrEqualToConstant: 220).isActive = true
 
 // right pane: transcript
 controller.textView.isEditable = false
 controller.textView.isSelectable = true
 controller.textView.delegate = controller
+controller.textView.backgroundColor = DS.cardWhite
 controller.textView.linkTextAttributes = [
-    .foregroundColor: NSColor.controlAccentColor,
+    .foregroundColor: DS.paleBlueText,
     .cursor: NSCursor.pointingHand,
 ]
-controller.textView.textContainerInset = NSSize(width: 26, height: 20)
+controller.textView.textContainerInset = NSSize(width: 32, height: 28)
 controller.textView.autoresizingMask = [.width]
 controller.textView.isVerticallyResizable = true
 controller.textView.textContainer?.widthTracksTextView = true
@@ -1322,11 +1757,11 @@ textScroll.hasVerticalScroller = true
 // NSTextTable needs TextKit 1; touching layoutManager opts out of TextKit 2
 _ = controller.textView.layoutManager
 
-// centered reading column: cap the text measure at ~720pt, grow side insets beyond it
+// centered reading column: cap the text measure at ~680pt, generous side insets
 func updateTextInsets() {
     let w = textScroll.contentView.bounds.width
-    let side = max(26, (w - 720) / 2)
-    controller.textView.textContainerInset = NSSize(width: side, height: 24)
+    let side = max(32, (w - 680) / 2)
+    controller.textView.textContainerInset = NSSize(width: side, height: 32)
 }
 textScroll.contentView.postsFrameChangedNotifications = true
 NotificationCenter.default.addObserver(
@@ -1376,6 +1811,9 @@ if let first = controller.rows.firstIndex(where: { if case .entry = $0 { return 
 controller.startTimer()
 
 window.makeKeyAndOrderFront(nil)
-split.setPosition(280, ofDividerAt: 0)
+split.setPosition(300, ofDividerAt: 0)
+if CommandLine.arguments.contains("--prefs") {
+    controller.openPrefs()
+}
 app.activate(ignoringOtherApps: true)
 app.run()
