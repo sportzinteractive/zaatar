@@ -242,11 +242,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let candidate = "\(bundled)/zaatar/scripts/setup.sh"
                 if fm.fileExists(atPath: candidate) { setupPath = candidate }
             }
-            // Open Terminal with the setup script
-            let script = "tell application \"Terminal\"\nactivate\ndo script \"bash '\(setupPath)'\"\nend tell"
+            // Open Terminal with the setup script (no osascript, avoids TCC prompt)
             let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-            proc.arguments = ["-e", script]
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            proc.arguments = ["-a", "Terminal", setupPath]
             try? proc.run()
         }
 
@@ -447,13 +446,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func openViewer() {
-        shAsync("""
-        if pgrep -x zaatarviewer >/dev/null; then
-          osascript -e 'tell application "System Events" to set frontmost of first process whose name is "zaatarviewer" to true' >/dev/null 2>&1
-        else
-          nohup '\(viewerCmd)' >/dev/null 2>&1 &
-        fi
-        """)
+        // Bring viewer to front using NSRunningApplication (no TCC prompt)
+        let viewers = NSWorkspace.shared.runningApplications.filter { $0.localizedName == "zaatarviewer" }
+        if let viewer = viewers.first {
+            viewer.activate()
+        } else {
+            shAsync("nohup '\(viewerCmd)' >/dev/null 2>&1 &")
+        }
     }
 
     @objc func retryFull(_ sender: NSMenuItem) { retry(sender.representedObject as? String, fast: false) }

@@ -620,7 +620,7 @@ struct ActionItem {
     }
 
     var assigneeDisplay: String {
-        recipient.isEmpty || recipient == "self" ? owner : "\(owner) \u{2192} \(recipient)"
+        recipient.isEmpty || recipient == "self" ? owner : recipient
     }
 
     var srcPretty: String {
@@ -1175,7 +1175,7 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
             let tf = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
             switch field {
             case "text":  alert.messageText = "Edit action item"; tf.stringValue = item.text
-            case "owner": alert.messageText = "Edit assignee (Name -> Recipient)"; tf.stringValue = "\(item.owner) -> \(item.recipient)"
+            case "owner": alert.messageText = "Edit assignee"; tf.stringValue = item.assigneeDisplay
             case "due":   alert.messageText = "Edit due date (YYYY-MM-DD)"; tf.stringValue = item.due
             default: return true
             }
