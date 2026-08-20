@@ -3,8 +3,8 @@
 # (or from a tap once published: brew install --HEAD <owner>/zaatar/zaatar)
 class Zaatar < Formula
   desc "Local-first meeting recorder and transcriber for macOS"
-  homepage "https://github.com/monojitbanerjee/zaatar"
-  head "https://github.com/monojitbanerjee/zaatar.git", branch: "main"
+  homepage "https://github.com/sportzinteractive/zaatar"
+  head "https://github.com/sportzinteractive/zaatar.git", branch: "main"
   license "MIT"
 
   depends_on :macos

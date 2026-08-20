@@ -38,7 +38,7 @@ provider CLI). No LLM configured = you keep the timestamped raw transcript.
 ### One-line install (recommended)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/monojitbanerjee/zaatar/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/sportzinteractive/zaatar/main/scripts/install.sh | bash
 ```
 
 Installs dependencies, compiles the native apps, downloads whisper models,
@@ -52,14 +52,14 @@ zaatar stop
 
 ### Download the app
 
-Grab `Zaatar.dmg` from [Releases](https://github.com/monojitbanerjee/zaatar/releases),
+Grab `Zaatar.dmg` from [Releases](https://github.com/sportzinteractive/zaatar/releases),
 drag Zaatar to Applications, and launch. The app walks you through setup on
 first run (opens a Terminal window for dependency installation).
 
 ### Homebrew
 
 ```sh
-brew install --HEAD monojitbanerjee/zaatar/zaatar
+brew install --HEAD sportzinteractive/zaatar/zaatar
 zaatar setup
 ```
 

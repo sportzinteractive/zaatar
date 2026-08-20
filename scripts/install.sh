@@ -1,12 +1,12 @@
 #!/bin/bash
-# One-line install: curl -fsSL https://raw.githubusercontent.com/monojitbanerjee/zaatar/main/scripts/install.sh | bash
+# One-line install: curl -fsSL https://raw.githubusercontent.com/sportzinteractive/zaatar/main/scripts/install.sh | bash
 #
 # Installs Zaatar to ~/.local/share/zaatar, compiles the native apps, downloads
 # whisper models, and walks through an interactive setup. Re-run to update.
 set -euo pipefail
 
 ZAATAR_DIR="${ZAATAR_DIR:-$HOME/.local/share/zaatar}"
-REPO="https://github.com/monojitbanerjee/zaatar.git"
+REPO="https://github.com/sportzinteractive/zaatar.git"
 
 say()  { printf '\n\033[1;32m==> %s\033[0m\n' "$1"; }
 err()  { printf '\033[1;31merror: %s\033[0m\n' "$1" >&2; exit 1; }
