@@ -60,7 +60,7 @@ else
 fi
 
 # ---- 1. LLM provider --------------------------------------------------------
-say "1/5  LLM for meeting notes, briefs, and commitments"
+say "1/6  LLM for meeting notes, briefs, and commitments"
 note "Transcription is always local. The LLM only sees transcript text."
 HAVE_CLAUDE=""; command -v claude >/dev/null 2>&1 && HAVE_CLAUDE=" (installed)"
 HAVE_OLLAMA=""; command -v ollama >/dev/null 2>&1 && HAVE_OLLAMA=" (installed)"
@@ -97,7 +97,7 @@ case "$REPLY" in
 esac
 
 # ---- 2. calendar / meeting software -----------------------------------------
-say "2/5  Calendar (meeting prompts + auto-stop; Meet/Zoom/Teams/Webex links all detected)"
+say "2/6  Calendar (meeting prompts + auto-stop; Meet/Zoom/Teams/Webex links all detected)"
 note "1) Google Calendar (via gogcli)"
 note "2) Outlook / Microsoft 365 (via Microsoft Graph CLI)"
 note "3) None - start/stop recordings manually"
@@ -128,7 +128,7 @@ case "$REPLY" in
 esac
 
 # ---- 3. whisper models -------------------------------------------------------
-say "3/5  Whisper models (local transcription)"
+say "3/6  Whisper models (local transcription)"
 mkdir -p "$MODELS_DIR"
 HF_BASE="https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
 if [ -f "$MODELS_DIR/ggml-large-v3.bin" ]; then
@@ -142,8 +142,31 @@ elif yesno "Download ggml-base.bin (~148 MB, live rough transcript)?" "y"; then
   curl -L -C - -o "$MODELS_DIR/ggml-base.bin" "$HF_BASE/ggml-base.bin"
 fi
 
-# ---- 4. native apps ----------------------------------------------------------
-say "4/5  Native apps (recorder + menu bar)"
+# ---- 4. speaker diarization --------------------------------------------------
+say "4/6  Speaker diarization (optional)"
+note "Adds speaker names to transcripts using pyannote (GPU-accelerated)."
+note "Requires a free Hugging Face account."
+HF_TOK_FILE="$HOME/.cache/huggingface/token"
+if [ -s "$HF_TOK_FILE" ]; then
+  note "HF token found at $HF_TOK_FILE"
+else
+  note "To enable diarization:"
+  note "  1. Create a free account at https://huggingface.co"
+  note "  2. Accept terms at https://huggingface.co/pyannote/speaker-diarization-3.1"
+  note "  3. Create a token at https://huggingface.co/settings/tokens"
+  if yesno "Paste your Hugging Face token now?" "n"; then
+    ask "Token"
+    if [ -n "$REPLY" ]; then
+      mkdir -p "$(dirname "$HF_TOK_FILE")"
+      printf '%s' "$REPLY" > "$HF_TOK_FILE"
+      chmod 600 "$HF_TOK_FILE"
+      note "saved to $HF_TOK_FILE"
+    fi
+  fi
+fi
+
+# ---- 5. native apps ----------------------------------------------------------
+say "5/6  Native apps (recorder + menu bar)"
 if [ ! -x "$ROOT/native/zaatarcap/zaatarcap" ]; then
   note "Compiling native apps (requires Xcode Command Line Tools)..."
   (cd "$ROOT/native/zaatarcap"    && swiftc -O main.swift -o zaatarcap    -framework AVFoundation)
@@ -163,8 +186,8 @@ for APP in ZaatarCap:zaatarcap ZaatarBar:zaatarbar; do
 done
 note "First recording will prompt for Microphone + System Audio Recording permissions."
 
-# ---- 5. background watcher + menu bar ----------------------------------------
-say "5/5  Background services"
+# ---- 6. background watcher + menu bar ----------------------------------------
+say "6/6  Background services"
 if [ -n "$CAL_SET" ]; then
   if yesno "Install the calendar watcher (prompts at meeting start, auto-stops after)?" "y"; then
     PLIST="$HOME/Library/LaunchAgents/org.zaatar.meet-watch.plist"

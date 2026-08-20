@@ -88,12 +88,13 @@ WPROMPT=()
 
 if [ "$FAST" = false ] && [ -n "$HF_TOKEN" ]; then
   DIARIZE_PY="$BIN_DIR/../lib/diarize.py"
-  WHISPERX_PYTHON="$(dirname "$(command -v whisperx 2>/dev/null || echo /dev/null)")/../lib/python3.*/site-packages"
-  DIARIZE_PYTHON="${ZAATAR_DIARIZE_PYTHON:-$(command -v python3)}"
-  # Prefer the whisperx venv python (has pyannote installed)
-  [ -x "$HOME/.local/share/uv/tools/whisperx/bin/python" ] && DIARIZE_PYTHON="$HOME/.local/share/uv/tools/whisperx/bin/python"
+  # Find a python with pyannote: zaatar's own venv first, then system python
+  DIARIZE_PYTHON=""
+  for _py in "$BIN_DIR/../diarize/.venv/bin/python" "$(command -v python3 2>/dev/null)"; do
+    [ -x "$_py" ] && "$_py" -c "from pyannote.audio import Pipeline" 2>/dev/null && DIARIZE_PYTHON="$_py" && break
+  done
 
-  if [ -f "$DIARIZE_PY" ] && "$DIARIZE_PYTHON" -c "from pyannote.audio import Pipeline" 2>/dev/null; then
+  if [ -n "$DIARIZE_PYTHON" ] && [ -f "$DIARIZE_PY" ]; then
     echo "[2/3] Speaker diarization (pyannote on MPS)..."
     mkdir -p "$TMP/wx"
     if "$DIARIZE_PYTHON" "$DIARIZE_PY" "$AUDIO" "$TMP/wx/diarize.srt" \

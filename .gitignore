@@ -4,8 +4,9 @@ native/zaatarprompt/zaatarprompt
 native/zaatarviewer/zaatarviewer
 native/zaatarbar/zaatarbar
 
-# vad virtualenv
+# virtualenvs (created at install time)
 vad/.venv/
+diarize/.venv/
 
 *.wav
 __pycache__/

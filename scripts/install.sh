@@ -64,6 +64,22 @@ if command -v python3 >/dev/null 2>&1; then
     || note "VAD setup skipped (non-fatal)"
 fi
 
+# ---- Speaker diarization (optional) -------------------------------------------
+say "Setting up speaker diarization (optional, GPU-accelerated)"
+note "Adds speaker names to transcripts. Requires a free Hugging Face account"
+note "and accepting the pyannote model terms."
+if command -v python3 >/dev/null 2>&1; then
+  if python3 -c "from pyannote.audio import Pipeline" 2>/dev/null; then
+    note "pyannote already available in system python"
+  else
+    (cd "$ZAATAR_DIR" && python3 -m venv diarize/.venv \
+      && diarize/.venv/bin/pip install -q pyannote.audio torch) \
+      || note "Diarization setup skipped (non-fatal). Install later: pip install pyannote.audio torch"
+  fi
+else
+  note "python3 not found, skipping diarization setup"
+fi
+
 # ---- interactive setup (compiles, downloads models, configures) -----------------
 say "Running interactive setup"
 "$ZAATAR_DIR/scripts/setup.sh"

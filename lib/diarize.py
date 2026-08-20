@@ -21,7 +21,13 @@ def main():
     pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=token)
 
     device = "cpu"
-    if torch.backends.mps.is_available():
+    if torch.cuda.is_available():
+        try:
+            pipeline.to(torch.device("cuda"))
+            device = "cuda"
+        except Exception:
+            pass
+    elif torch.backends.mps.is_available():
         try:
             pipeline.to(torch.device("mps"))
             device = "mps"
