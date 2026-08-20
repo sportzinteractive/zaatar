@@ -86,17 +86,36 @@ WPROMPT=()
 # ${arr[@]+...} idiom: bash 3.2 + set -u treats an empty array expansion as fatal
 "$WHISPER" -m "$MODEL" -f "$AUDIO" -l auto -mc 0 ${WPROMPT[@]+"${WPROMPT[@]}"} -osrt -of "$TMP/orig" 2>&1 | tail -1
 
-if [ "$FAST" = false ] && [ -n "$HF_TOKEN" ] && command -v whisperx >/dev/null; then
-  echo "[2/3] Speaker diarization (whisperx + pyannote)..."
-  # medium model: speaker labels come from pyannote, not whisper;
-  # canonical text comes from the step-1 model
-  if whisperx "$AUDIO" --model medium --device cpu --compute_type int8 \
-      --threads 8 --diarize --hf_token "$HF_TOKEN" \
-      --output_dir "$TMP/wx" --output_format srt >"$TMP/whisperx.log" 2>&1; then
-    DIARIZED_OK=true
+if [ "$FAST" = false ] && [ -n "$HF_TOKEN" ]; then
+  DIARIZE_PY="$BIN_DIR/../lib/diarize.py"
+  WHISPERX_PYTHON="$(dirname "$(command -v whisperx 2>/dev/null || echo /dev/null)")/../lib/python3.*/site-packages"
+  DIARIZE_PYTHON="${ZAATAR_DIARIZE_PYTHON:-$(command -v python3)}"
+  # Prefer the whisperx venv python (has pyannote installed)
+  [ -x "$HOME/.local/share/uv/tools/whisperx/bin/python" ] && DIARIZE_PYTHON="$HOME/.local/share/uv/tools/whisperx/bin/python"
+
+  if [ -f "$DIARIZE_PY" ] && "$DIARIZE_PYTHON" -c "from pyannote.audio import Pipeline" 2>/dev/null; then
+    echo "[2/3] Speaker diarization (pyannote on MPS)..."
+    mkdir -p "$TMP/wx"
+    if "$DIARIZE_PYTHON" "$DIARIZE_PY" "$AUDIO" "$TMP/wx/diarize.srt" \
+        --hf-token "$HF_TOKEN" >"$TMP/whisperx.log" 2>&1; then
+      DIARIZED_OK=true
+    else
+      echo "WARN: pyannote diarization failed, see log"
+      tail -5 "$TMP/whisperx.log" || true
+    fi
+  elif command -v whisperx >/dev/null; then
+    echo "[2/3] Speaker diarization (whisperx fallback, CPU)..."
+    # tiny model: we only need pyannote speaker labels, not ASR quality
+    if whisperx "$AUDIO" --model tiny --device cpu --compute_type int8 \
+        --threads 16 --diarize --hf_token "$HF_TOKEN" \
+        --output_dir "$TMP/wx" --output_format srt >"$TMP/whisperx.log" 2>&1; then
+      DIARIZED_OK=true
+    else
+      echo "WARN: diarization failed, continuing without speaker labels (see log)"
+      tail -5 "$TMP/whisperx.log" || true
+    fi
   else
-    echo "WARN: diarization failed, continuing without speaker labels (see log)"
-    tail -5 "$TMP/whisperx.log" || true
+    echo "[2/3] Skipping diarization (no pyannote or whisperx)."
   fi
 else
   echo "[2/3] Skipping diarization."
