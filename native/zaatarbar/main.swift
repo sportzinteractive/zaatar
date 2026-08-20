@@ -42,12 +42,23 @@ let stateDir = zcfg["ZAATAR_STATE_DIR"] ?? "\(home)/.local/state/zaatar"
 let recDir = zcfg["ZAATAR_REC_DIR"] ?? "\(home)/Recordings/meetings"
 // Zaatar repo root: from config (needed when running as an .app bundle),
 // falling back to argv[0] at <root>/native/zaatarbar/zaatarbar.
-let toolDir = zcfg["ZAATAR_DIR"] ?? URL(fileURLWithPath: CommandLine.arguments[0])
-    .resolvingSymlinksInPath()
-    .deletingLastPathComponent()       // native/zaatarbar
-    .deletingLastPathComponent()       // native
-    .deletingLastPathComponent()       // repo root
-    .path
+let toolDir: String = {
+    if let d = zcfg["ZAATAR_DIR"], fm.fileExists(atPath: d + "/bin/zaatar") { return d }
+    // argv[0] walkup: works when running from the repo tree directly
+    let fromArgv = URL(fileURLWithPath: CommandLine.arguments[0])
+        .resolvingSymlinksInPath()
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().path
+    if fm.fileExists(atPath: fromArgv + "/bin/zaatar") { return fromArgv }
+    // Common install location (install.sh default)
+    let local = "\(home)/.local/share/zaatar"
+    if fm.fileExists(atPath: local + "/bin/zaatar") { return local }
+    // Homebrew
+    if let brew = ProcessInfo.processInfo.environment["HOMEBREW_PREFIX"] ?? (fm.fileExists(atPath: "/opt/homebrew/opt/zaatar/libexec") ? "/opt/homebrew" : nil) {
+        let hb = "\(brew)/opt/zaatar/libexec"
+        if fm.fileExists(atPath: hb + "/bin/zaatar") { return hb }
+    }
+    return fromArgv  // best effort
+}()
 let recCmd = "\(toolDir)/bin/rec"
 let transcribeCmd = "\(toolDir)/bin/transcribe.sh"
 let viewerCmd = "\(toolDir)/native/zaatarviewer/zaatarviewer"

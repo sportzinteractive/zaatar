@@ -174,6 +174,7 @@ if [ ! -x "$ROOT/native/zaatarcap/zaatarcap" ]; then
   (cd "$ROOT/native/zaatarviewer" && swiftc -O main.swift -o zaatarviewer -framework AppKit)
   (cd "$ROOT/native/zaatarbar"    && swiftc -O main.swift -o zaatarbar    -framework AppKit -framework AVFoundation -framework ServiceManagement)
 fi
+set_config ZAATAR_DIR "$ROOT"
 mkdir -p "$HOME/Applications"
 for APP in ZaatarCap:zaatarcap ZaatarBar:zaatarbar; do
   NAME="${APP%%:*}"; BIN="${APP##*:}"
