@@ -34,6 +34,7 @@ compile zaatarcap    zaatarcap    -framework AVFoundation
 compile zaatarprompt zaatarprompt -framework AppKit
 compile zaatarviewer zaatarviewer -framework AppKit
 compile zaatarbar    zaatarbar    -framework AppKit -framework AVFoundation -framework ServiceManagement
+compile zaatarcal    zaatarcal    -framework EventKit
 
 # ---- 2. assemble Zaatar.app bundle ---------------------------------------------
 say "bundle" "Zaatar.app"
@@ -87,7 +88,7 @@ cp "$ROOT/README.md" "$RESOURCES/" 2>/dev/null || true
 cp "$ROOT/LICENSE" "$RESOURCES/" 2>/dev/null || true
 
 # Pre-compiled universal binaries into the bundle
-for APP_BIN in zaatarcap zaatarprompt zaatarviewer zaatarbar; do
+for APP_BIN in zaatarcap zaatarprompt zaatarviewer zaatarbar zaatarcal; do
   mkdir -p "$RESOURCES/native/$APP_BIN"
   cp "$ROOT/native/$APP_BIN/$APP_BIN" "$RESOURCES/native/$APP_BIN/"
   [ -f "$ROOT/native/$APP_BIN/Info.plist" ] && cp "$ROOT/native/$APP_BIN/Info.plist" "$RESOURCES/native/$APP_BIN/"
