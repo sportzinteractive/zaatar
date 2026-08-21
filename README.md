@@ -1,60 +1,45 @@
 # Zaatar
 
-Local-first meeting recorder and transcriber for macOS. Records mic + system
-audio natively, transcribes with whisper.cpp, optionally diarizes speakers,
-and produces clean meeting notes via the Claude CLI. Calendar-aware: prompts
-you when a Google Meet event starts, auto-stops when it ends.
+**Your meetings, your machine.** Record, transcribe, diarize, and summarize meetings entirely locally. Nothing leaves your computer except the transcript text you choose to send to an LLM.
 
-Everything runs on your machine. The only data that leaves it is the raw
-transcript text sent to your configured LLM (Claude CLI by default; point
-`ZAATAR_LLM_CMD` at ollama for a fully local pipeline, or at any other
-provider CLI). No LLM configured = you keep the timestamped raw transcript.
+https://github.com/user-attachments/assets/zaatar-demo.mp4
 
-## Components
+## What it does
 
-- `bin/rec` - start/stop/status. Native capture -> wav -> background transcription.
-- `bin/transcribe.sh` - whisper.cpp -> optional whisperx+pyannote diarization -> Claude cleanup (summary, key points, transcripts). VAD junk guard skips no-speech recordings.
-- `bin/meet-watch.sh` - calendar watcher (launchd, every 60s): floating start prompt at meeting start ("Join & Record" opens the Meet link), auto-stop 2 min after the event ends, wav retention.
-- `bin/live-transcribe.sh` - rough live transcript while recording (small model).
-- `bin/commitments.sh` - post-meeting pass: extracts who-promised-what-by-when into a running ledger (`ledger/commitments.md`, tick items off by hand).
-- `bin/brief.sh` - pre-meeting brief: ~15 min before a meeting, digests your prior transcripts with the same attendees + their open ledger commitments into a 60-second read, surfaced via the prompt panel.
-- `native/zaatarcap` - Swift capture CLI: mic + system audio via Core Audio process tap (macOS 14.2+), drift-corrected aggregate device, 16kHz mono wav. Falls back to mic-only.
-- `native/zaatarprompt` - floating non-activating prompt panel (Granola-style).
-- `native/zaatarviewer` - transcript browser with live view.
-- `native/zaatarbar` - menu bar app: record/stop, stray-recorder detection, transcription-failure alerts with retry.
+- Records mic + system audio natively (works with Meet, Zoom, Teams, Webex, anything)
+- Transcribes with whisper.cpp on your GPU (Metal-accelerated on Apple Silicon)
+- Identifies speakers with pyannote (GPU-accelerated, optional)
+- Produces clean meeting notes: summary, key points, cleaned transcript, English translation
+- Extracts commitments into a running ledger (who promised what by when)
+- Generates pre-meeting briefs from your prior conversations with the same people
+- Calendar-aware: prompts at meeting start, auto-stops when it ends, opens the join link
 
-## Requirements
+## Why local
 
-- macOS 14.2+ (system-audio process tap), Xcode CLT (`swiftc`)
-- `brew install ffmpeg jq whisper-cpp`
-- whisper models in `~/.local/share/whisper-models/`: `ggml-large-v3.bin` (final), `ggml-base.bin` (live) from [ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp)
-- An LLM for cleanup/briefs (optional but recommended): [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) by default, or any provider/local model via `ZAATAR_LLM_CMD` (see config.example.sh)
-- Optional diarization: `pipx install whisperx`, Hugging Face token in `~/.cache/huggingface/token` with pyannote access
-- Optional VAD junk guard: `python3 -m venv vad/.venv && vad/.venv/bin/pip install -r vad/requirements.txt`
-- Optional calendar prompts: any CLI that prints Google-Calendar-style event JSON (see "Calendar integration" below)
+- Your conversations never touch a third-party server for transcription or diarization
+- No accounts, no subscriptions, no "we updated our privacy policy" emails
+- Works offline (except the LLM cleanup step, which is optional)
+- BYO-LLM: Claude CLI (default), ollama for fully offline, or any provider via `ZAATAR_LLM_CMD`
+- No LLM configured? You still get timestamped, speaker-labeled transcripts
 
 ## Install
 
-### One-line install (recommended)
+### One-line install
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/sportzinteractive/zaatar/main/scripts/install.sh | bash
 ```
 
-Installs dependencies, compiles the native apps, downloads whisper models,
-and walks through an interactive setup (LLM provider, calendar, permissions).
-Takes about 5 minutes. Re-run to update.
+Installs dependencies, compiles the native apps, downloads whisper models, and walks through setup. Takes about 5 minutes. Re-run to update.
 
 ```sh
-zaatar start my-meeting    # first run prompts for mic + system audio
-zaatar stop
+zaatar start my-meeting    # first run prompts for mic permission
+zaatar stop                # transcribes in background, notifies when done
 ```
 
-### Download the app
+### Download
 
-Grab `Zaatar.dmg` from [Releases](https://github.com/sportzinteractive/zaatar/releases),
-drag Zaatar to Applications, and launch. The app walks you through setup on
-first run (opens a Terminal window for dependency installation).
+Grab `Zaatar.dmg` from [Releases](https://github.com/sportzinteractive/zaatar/releases), drag to Applications, launch. Setup runs on first open.
 
 ### Homebrew
 
@@ -63,84 +48,73 @@ brew install --HEAD sportzinteractive/zaatar/zaatar
 zaatar setup
 ```
 
-### From a git checkout
+## How it works
 
-```sh
-./scripts/build.sh                       # compile + install app bundles
-scripts/setup.sh                         # same interactive setup
-bin/rec start my-meeting
-bin/rec stop
+```
+Calendar event starting
+        |
+   [Join & Record] -----> opens Meet/Zoom/Teams link
+        |
+   zaatarcap (mic + system audio, 16kHz mono wav)
+        |
+   Event ends -> auto-stop
+        |
+   whisper.cpp large-v3 (Metal GPU) -----> timestamped transcript
+        |
+   pyannote (MPS/CUDA GPU) -----> speaker labels (optional)
+        |
+   LLM cleanup -----> summary, key points, clean transcript
+        |
+   commitments.sh -----> who-promised-what-by-when ledger
+        |
+   Notification: "Transcript ready"
 ```
 
-Manual alternative to the wizard: `cp config.example.sh ~/.config/zaatar/config`
-and edit; calendar watcher:
+## Components
 
-```sh
-sed "s|__ZAATAR_DIR__|$(pwd)|" launchd/org.zaatar.meet-watch.plist \
-  > ~/Library/LaunchAgents/org.zaatar.meet-watch.plist
-launchctl load ~/Library/LaunchAgents/org.zaatar.meet-watch.plist
-```
-
-Menu bar app: `open ~/Applications/ZaatarBar.app` (registers itself as a login item).
+| Component | What it does |
+|-----------|-------------|
+| `zaatarbar` | Menu bar app: record/stop, status, preferences |
+| `zaatarviewer` | Transcript browser with live view during recording |
+| `zaatarcap` | Native audio capture (mic + system audio, macOS 14.2+) |
+| `zaatarprompt` | Floating prompt panel at meeting start |
+| `zaatarcal` | Calendar integration via macOS EventKit (Google, Outlook, iCloud) |
+| `transcribe.sh` | Transcription + diarization + LLM cleanup pipeline |
+| `meet-watch.sh` | Calendar watcher: start prompts, auto-stop, pre-meeting briefs |
+| `brief.sh` | Pre-meeting digest from prior transcripts with the same attendees |
+| `commitments.sh` | Extracts action items into a trackable ledger |
+| `live-transcribe.sh` | Rough live transcript while recording |
 
 ## Calendar integration
 
-The watcher works with any meeting platform: Google Meet, Zoom, Microsoft
-Teams, and Webex links are detected from the event's video-conference field,
-location, or description. Recording itself is platform-independent (it
-captures mic + system audio at the OS level, so it works with any app).
+Works with any calendar configured in macOS System Settings (Google, Outlook, iCloud, Exchange) via native EventKit. No OAuth setup, no API keys. Cross-platform Google Calendar OAuth script included for non-macOS use.
 
-`ZAATAR_CALENDAR_CMD` is any command that prints today's events as a JSON
-array of Google-Calendar-shaped objects. Zaatar reads these fields:
-
-| Field | Used for |
-|---|---|
-| `id` | de-dup markers (prompted/briefed/auto-stop state) |
-| `summary` | recording name, prompt title |
-| `start.dateTime` / `end.dateTime` | RFC3339 with offset or `Z`; drives prompt timing and auto-stop |
-| `hangoutLink` | join URL (any video link works, despite the name) |
-| `conferenceData.entryPoints[]` | fallback join URL (`entryPointType: "video"`) |
-| `location`, `description` | scanned for Zoom/Teams/Webex/Meet URLs |
-| `attendees[].displayName` / `.email` / `.self` / `.responseStatus` / `.resource` | pre-meeting briefs, participants header |
-
-Only `id`, `summary`, `start`, and `end` are required; events without a
-detectable video link are ignored.
-
-Providers:
-
-- **Google Calendar** via [gogcli](https://github.com/steipete/gogcli):
-  `ZAATAR_CALENDAR_CMD="gog calendar events --today --max 50 -j --results-only"`
-- **Outlook / Microsoft 365** via the bundled adapter (requires the
-  [Microsoft Graph CLI](https://learn.microsoft.com/en-us/graph/cli/installation),
-  authenticate once with `mgc login --scopes Calendars.Read`):
-  `ZAATAR_CALENDAR_CMD="/path/to/zaatar/scripts/outlook-calendar.sh"`
-- **Anything else**: emit the shape above from any source (ics parser,
-  CalDAV, EWS) and point `ZAATAR_CALENDAR_CMD` at it.
+Recording itself is platform-independent: captures audio at the OS level, so it works with any meeting app. Meet, Zoom, Teams, and Webex join links are detected from event fields.
 
 ## Configuration
 
-All settings live in `~/.config/zaatar/config` (plain `KEY="value"` lines,
-read by both the shell scripts and the native apps). See `config.example.sh`
-for the full list: directories, models, spoken languages for the cleanup
-prompt, mic gain floor, VAD threshold, wav retention.
+All settings in `~/.config/zaatar/config`. Run `zaatar setup` to change them interactively, or edit directly (see `config.example.sh`).
 
-## macOS permission notes (hard-won)
+Key settings:
+- `ZAATAR_LLM_CMD` - LLM provider (empty = Claude CLI; set to ollama/llm/anything)
+- `ZAATAR_LANGS` - spoken languages in your meetings
+- `ZAATAR_CALENDAR_CMD` - calendar source (auto-configured by setup)
+- `ZAATAR_WAV_RETENTION_DAYS` - auto-delete recordings after N days (default: 14)
+- `ZAATAR_BRIEF_LEAD` - seconds before meeting to generate pre-brief (default: 900)
 
-- Recording is done by `ZaatarCap.app` so the TCC grants (Microphone +
-  System Audio Recording) belong to the bundle - recording works when
-  started from launchd, the menu bar, or a terminal.
-- Ad-hoc signing means every rebuild invalidates the grants; macOS
-  re-prompts once. This is expected.
-- Never start a recording from a sandboxed shell (TCC attributes the
-  request to the sandbox parent and SIGKILLs the recorder).
-- Browser AGC (Meet in Chrome) silently drags the macOS input volume down;
-  `rec` re-asserts a floor every 30s while recording (`ZAATAR_MIC_GAIN_FLOOR`).
+## Requirements
+
+- macOS 14.2+ (system-audio capture via process tap; earlier versions: mic-only)
+- Xcode Command Line Tools (`xcode-select --install`)
+- The installer handles everything else: ffmpeg, jq, whisper-cpp, whisper models
+
+Optional:
+- An LLM for transcript cleanup and briefs (Claude CLI, ollama, or any provider)
+- Hugging Face token for speaker diarization ([pyannote model access](https://huggingface.co/pyannote/speaker-diarization-3.1))
 
 ## Consent
 
-You are recording people. Recording-consent laws vary by jurisdiction
-(some require all-party consent). Tell your participants, get consent,
-and check your local law before using Zaatar.
+You are recording people. Recording-consent laws vary by jurisdiction (some require all-party consent). Tell your participants, get consent, and check your local law before using Zaatar.
 
 ## License
 
