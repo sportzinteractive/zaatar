@@ -199,10 +199,39 @@ The conversation as spoken, cleaned up: merge fragments into coherent dialogue t
 
 ## Transcript (English)
 Faithful, natural English translation of the same cleaned dialogue, same speaker labels. Translate non-English portions properly; keep technical terms as-is. If the original is already entirely in English, write "Same as above." instead of repeating it.
-
-Rules: do not invent content that is not in the input. If a passage is unintelligible, mark it [unclear]. Output only the markdown document, nothing else.
 PROMPT
 )"
+
+# Behavioral Read: append per-speaker behavioral evidence + scorecard to the prompt
+if [ "$ZAATAR_BEHAVIORAL_READ" = "true" ]; then
+  BEHAVIORAL_PROMPT="$(cat <<'BPROMPT'
+
+## Behavioral Read
+For each speaker EXCEPT the host/interviewer, extract behavioral evidence. Base this on the RAW input transcript (fragments, restarts, fillers as originally transcribed), not your cleaned version. For each trait below, list direct quotes with timestamps as evidence, or write "Insufficient evidence." Do NOT output numeric scores, ratings, or verdicts - evidence lists only, with a one-line pattern observation per trait at most.
+
+- Hedging vs certainty: qualifier density ("I think", "maybe", "probably"), definitive claims
+- Assertiveness: pushes back, corrects the interviewer, defends claims under challenge vs complies/retreats
+- Ownership language: "I built/decided" vs "we/they/it was done"; deflection of responsibility
+- Directness: answers the question asked vs orbits, deflects, or answers a different question
+- Self-advocacy: raises own interests, asks for things, negotiates
+- Under challenge: response when questioned, corrected, or given homework (defensive, open, evasive, curious)
+
+After the evidence lists, add a subsection "### Scorecard (text-only)". Its first line must be exactly this, in italics: *Text-only scorecard from unverified speaker attribution; superseded by the full emotional eval when one is run.* Then for each speaker scored above, a markdown table:
+
+| Parameter | Score | Confidence | Evidence |
+|---|---|---|---|
+
+Six parameters, scored 1-5: Clarity & Structure (1 = rambling, 5 = ordered reasoning); Concision / Focus (1 = drifts off-question, 5 = answers and stops); Assertiveness (1 = never takes a position, 5 = states and defends positions with reasons); Conversational Dominance (1 = minimal share of turns, 5 = controls topics; descriptive, not good or bad - estimate from turn counts in the transcript); Listening & Collaboration (1 = talks past others, 5 = builds on others); Confidence (1 = pervasive hedging, 5 = definitive claims held under challenge; mark this rows Confidence column no higher than Medium). Every score cites a short quote with timestamp in the Evidence cell. Confidence column = High/Medium/Low. A speaker with very little speech gets one row: "Insufficient sample". Add a one-line "Role context:" note under each table. Aggression is never scored; if genuinely hostile behavior appears, add an "Aggression flag:" line with quotes, otherwise omit.
+
+CAVEATS (mandatory): Begin this section with a "Reliability" line noting transcript quality (corruption %, hallucination artifacts) and this disclaimer verbatim: "Text-only read: no tone/prosody. Non-native code-switching under interview pressure can mimic low confidence. Treat as evidence pointers to verify, not conclusions." If more than ~30% of the speech from a speaker is corrupted, state that a behavioral read is not meaningful and list only what little evidence exists.
+BPROMPT
+)"
+  CLEANUP_PROMPT="${CLEANUP_PROMPT}${BEHAVIORAL_PROMPT}"
+fi
+
+CLEANUP_PROMPT="${CLEANUP_PROMPT}
+
+Rules: do not invent content that is not in the input. If a passage is unintelligible, mark it [unclear]. Output only the markdown document, nothing else."
 
 # Long meetings: two full transcripts exceed the model's max output tokens
 # (observed on 75-min meetings: truncated/tail-only output). Swap the two
@@ -225,10 +254,17 @@ Bulleted list: decisions, facts stated, action items, notable opinions.
 
 ## Detailed Notes
 Topic-by-topic narrative of the whole meeting in English, in chronological order, with approximate timestamps per topic. Attribute statements to speakers (infer speakers from context if no labels; use names if evident). Include every substantive exchange, but paraphrase; quote verbatim (in the original language) only where wording matters (commitments, disagreements, numbers, dates). Fix obvious mis-transcriptions of names/terms and keep them consistent. If the input header lists Participants (from calendar invite), treat those as the authoritative name spellings and use them to identify speakers. IGNORE hallucination artifacts (repeated loops, "Subtitles by the Amara.org community", nonsense repetitions).
-
-Rules: do not invent content that is not in the input. If a passage is unintelligible, mark it [unclear]. Output only the markdown document, nothing else. Note at the end: "Full verbatim transcript: see the raw transcript file."
 PROMPT
 )"
+
+  # Behavioral Read for long transcripts too
+  if [ "$ZAATAR_BEHAVIORAL_READ" = "true" ]; then
+    CLEANUP_PROMPT="${CLEANUP_PROMPT}${BEHAVIORAL_PROMPT}"
+  fi
+
+  CLEANUP_PROMPT="${CLEANUP_PROMPT}
+
+Rules: do not invent content that is not in the input. If a passage is unintelligible, mark it [unclear]. Output only the markdown document, nothing else. Note at the end: \"Full verbatim transcript: see the raw transcript file.\""
 fi
 
 CLEAN_OK=false

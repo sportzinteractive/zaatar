@@ -14,6 +14,7 @@ Usage:
   zaatar stop [--fast]        stop recording (transcription runs in background)
   zaatar status               show recorder status
   zaatar transcribe <wav>     (re)transcribe a recording
+  zaatar analyze <wav|last>   run full emotional/behavioral eval on a recording
   zaatar brief --title T --attendees "a@x,b@y"   generate a pre-meeting brief
   zaatar help                 this text
 
@@ -27,6 +28,14 @@ case "${1:-help}" in
   stop)       shift; exec "$BIN_DIR/rec" stop "$@" ;;
   status)     exec "$BIN_DIR/rec" status ;;
   transcribe) shift; exec "$BIN_DIR/transcribe.sh" "$@" ;;
+  analyze)
+    shift; ARG="${1:-}"
+    if [ "$ARG" = "last" ]; then
+      . "$BIN_DIR/../lib/config.sh"
+      ARG="$(ls -t "$ZAATAR_REC_DIR"/*.wav 2>/dev/null | head -1)"
+      [ -z "$ARG" ] && { echo "No recordings found in $ZAATAR_REC_DIR"; exit 1; }
+    fi
+    exec "$BIN_DIR/analyze.sh" "$ARG" ;;
   brief)      shift; exec "$BIN_DIR/brief.sh" "$@" ;;
   help|-h|--help) usage ;;
   *) usage; exit 1 ;;

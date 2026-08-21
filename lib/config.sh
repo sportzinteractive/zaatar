@@ -74,6 +74,17 @@ zaatar_llm_available() {
 # many seconds of detected speech (0 = disable). Needs vad/.venv installed.
 : "${ZAATAR_VAD_MIN_SPEECH:=10}"
 
+# Behavioral Read: include per-speaker behavioral evidence + scorecard in
+# transcript cleanup (text-only analysis from the transcript itself).
+# The full emotional eval (prosody + acoustic analysis) runs separately via
+# zaatar analyze and requires the prosody venv.
+: "${ZAATAR_BEHAVIORAL_READ:=true}"
+
+# Prosody/emotion venv: python with parselmouth + audeering wav2vec2.
+# Used by analyze.sh for acoustic arousal/valence/dominance scoring.
+# Set up via: zaatar setup --prosody (or manually create the venv).
+: "${ZAATAR_PROSODY_VENV:=}"
+
 # Delete wavs older than this many days once their transcript exists (0 = keep forever)
 : "${ZAATAR_WAV_RETENTION_DAYS:=14}"
 
@@ -89,5 +100,6 @@ export ZAATAR_REC_DIR ZAATAR_TRANSCRIPTS_DIR ZAATAR_STATE_DIR \
        ZAATAR_MODEL ZAATAR_LIVE_MODEL ZAATAR_CAP_BIN ZAATAR_LANGS \
        ZAATAR_CLEANUP_MODEL ZAATAR_QUESTIONS_INTERVAL ZAATAR_CALENDAR_CMD \
        ZAATAR_HF_TOKEN_FILE ZAATAR_MIC_GAIN_FLOOR ZAATAR_VAD_MIN_SPEECH \
+       ZAATAR_BEHAVIORAL_READ ZAATAR_PROSODY_VENV \
        ZAATAR_WAV_RETENTION_DAYS ZAATAR_BRIEF_LEAD ZAATAR_SELF_NAMES \
        ZAATAR_LLM_CMD
