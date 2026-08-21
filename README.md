@@ -2,7 +2,7 @@
 
 **Your meetings, your machine.** Record, transcribe, diarize, and summarize meetings entirely locally. Nothing leaves your computer except the transcript text you choose to send to an LLM.
 
-https://github.com/user-attachments/assets/zaatar-demo.mp4
+https://github.com/sportzinteractive/zaatar/releases/download/v0.1.0/zaatar-demo.mp4
 
 ## What it does
 
