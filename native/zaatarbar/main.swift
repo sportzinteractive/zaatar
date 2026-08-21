@@ -85,6 +85,61 @@ func shAsync(_ cmd: String) {
     DispatchQueue.global().async { sh(cmd) }
 }
 
+/// Run a command safely with explicit arguments (no shell interpolation).
+@discardableResult
+func run(_ exe: String, _ args: String...) -> String {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: exe)
+    p.arguments = Array(args)
+    var env = ProcessInfo.processInfo.environment
+    env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + (env["PATH"] ?? "")
+    p.environment = env
+    let pipe = Pipe()
+    p.standardOutput = pipe
+    p.standardError = FileHandle.nullDevice
+    do { try p.run() } catch { return "" }
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+    return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+}
+
+func runAsync(_ exe: String, _ args: String...) {
+    DispatchQueue.global().async {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: exe)
+        p.arguments = Array(args)
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + (env["PATH"] ?? "")
+        p.environment = env
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return }
+        p.waitUntilExit()
+    }
+}
+
+/// Run a command in background with nohup-like behavior and output redirection.
+func runBg(_ exe: String, args: [String], logPath: String? = nil) {
+    DispatchQueue.global().async {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: exe)
+        p.arguments = args
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:" + (env["PATH"] ?? "")
+        p.environment = env
+        if let log = logPath {
+            fm.createFile(atPath: log, contents: nil)
+            let fh = FileHandle(forWritingAtPath: log) ?? FileHandle.nullDevice
+            p.standardOutput = fh
+            p.standardError = fh
+        } else {
+            p.standardOutput = FileHandle.nullDevice
+            p.standardError = FileHandle.nullDevice
+        }
+        do { try p.run() } catch { return }
+    }
+}
+
 func readFile(_ path: String) -> String? {
     (try? String(contentsOfFile: path, encoding: .utf8))?
         .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -358,8 +413,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: Actions
 
-    @objc func stopFast() { shAsync("'\(recCmd)' stop --fast") }
-    @objc func stopFull() { shAsync("'\(recCmd)' stop") }
+    @objc func stopFast() { runAsync(recCmd, "stop", "--fast") }
+    @objc func stopFull() { runAsync(recCmd, "stop") }
     @objc func openPrefs() {
         // Launch the viewer with --prefs flag to open the preferences window
         let task = Process()
@@ -423,7 +478,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .replacingOccurrences(of: "[^a-z0-9]+", with: "-", options: .regularExpression)
             .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
         if slug.isEmpty { slug = "meeting" }
-        shAsync("'\(recCmd)' start '\(slug)'")
+        runAsync(recCmd, "start", slug)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.refresh() }
     }
 
@@ -462,7 +517,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let viewer = viewers.first {
             viewer.activate()
         } else {
-            shAsync("nohup '\(viewerCmd)' >/dev/null 2>&1 &")
+            runAsync(viewerCmd)
         }
     }
 
@@ -476,12 +531,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let wav = "\(recDir)/\(base).wav"
         guard fm.fileExists(atPath: wav) else {
             fm.createFile(atPath: "\(stateDir)/failed-dismissed-\(base)", contents: nil)
-            shAsync("'\(zpromptCmd)' --title 'Cannot retry' --subtitle 'WAV missing: \(base)' --button 'OK' --timeout 30")
+            runAsync(zpromptCmd, "--title", "Cannot retry", "--subtitle", "WAV missing: \(base)", "--button", "OK", "--timeout", "30")
             refresh()
             return
         }
         let log = "\(stateDir)/transcribe-\(base).log"
-        shAsync("nohup '\(transcribeCmd)' \(fast ? "--fast " : "")'\(wav)' >'\(log)' 2>&1 &")
+        var tArgs = [String]()
+        if fast { tArgs.append("--fast") }
+        tArgs.append(wav)
+        runBg(transcribeCmd, args: tArgs, logPath: log)
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.refresh() }
     }
 
@@ -499,7 +557,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard !fm.fileExists(atPath: marker) else { continue }
             fm.createFile(atPath: marker, contents: nil)
             DispatchQueue.global().async {
-                let btn = sh("'\(zpromptCmd)' --title 'Transcription failed' --subtitle '\(base)' --primary 'Retry' --button 'Dismiss' --timeout 120")
+                let btn = run(zpromptCmd, "--title", "Transcription failed", "--subtitle", base, "--primary", "Retry", "--button", "Dismiss", "--timeout", "120")
                 DispatchQueue.main.async {
                     switch btn {
                     case "Retry": self.retry(base, fast: false)

@@ -53,7 +53,7 @@ if [ -d "$ZAATAR_DIR/.git" ]; then
 else
   say "Downloading Zaatar"
   rm -rf "$ZAATAR_DIR"
-  git clone --depth 1 "$REPO" "$ZAATAR_DIR"
+  git clone --depth 1 --branch v0.1.0 "$REPO" "$ZAATAR_DIR"
 fi
 note "$ZAATAR_DIR"
 

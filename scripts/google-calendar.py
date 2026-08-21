@@ -16,10 +16,16 @@ import json, os, sys, time, hashlib, secrets, base64, webbrowser, urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
-# OAuth config - Zaatar's public client (installed app, no secret needed)
-# Users can override with their own credentials via env vars.
-CLIENT_ID = os.environ.get("ZAATAR_GOOGLE_CLIENT_ID",
-    "zaatar-calendar.apps.googleusercontent.com")
+# OAuth config - installed app (desktop), no client secret needed.
+# You must supply your own Google Cloud OAuth client ID.
+# Create one at: https://console.cloud.google.com/apis/credentials
+# (Application type: Desktop app, enable Calendar API)
+CLIENT_ID = os.environ.get("ZAATAR_GOOGLE_CLIENT_ID", "")
+if not CLIENT_ID:
+    print("ERROR: Set ZAATAR_GOOGLE_CLIENT_ID to your Google Cloud OAuth client ID.", file=sys.stderr)
+    print("       Create one at: https://console.cloud.google.com/apis/credentials", file=sys.stderr)
+    print("       (Application type: Desktop app, enable Google Calendar API)", file=sys.stderr)
+    sys.exit(1)
 REDIRECT_PORT = 8914
 REDIRECT_URI = f"http://localhost:{REDIRECT_PORT}"
 SCOPES = "https://www.googleapis.com/auth/calendar.readonly"

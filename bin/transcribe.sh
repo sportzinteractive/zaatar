@@ -111,8 +111,10 @@ if [ "$FAST" = false ] && [ -n "$HF_TOKEN" ]; then
   if [ -n "$DIARIZE_PYTHON" ] && [ -f "$DIARIZE_PY" ]; then
     echo "[2/3] Speaker diarization (pyannote on MPS)..."
     mkdir -p "$TMP/wx"
-    if "$DIARIZE_PYTHON" "$DIARIZE_PY" "$AUDIO" "$TMP/wx/diarize.srt" \
-        --hf-token "$HF_TOKEN" >"$TMP/whisperx.log" 2>&1; then
+    if HF_TOKEN="$HF_TOKEN" "$DIARIZE_PYTHON" "$DIARIZE_PY" "$AUDIO" "$TMP/wx/diarize.srt" \
+        >"$TMP/whisperx.log" 2>&1; then
+      # Note: --hf-token is passed via CLI arg (visible in ps). diarize.py reads
+      # HF_TOKEN from env as fallback; whisperx requires the flag.
       DIARIZED_OK=true
     else
       echo "WARN: pyannote diarization failed, see log"

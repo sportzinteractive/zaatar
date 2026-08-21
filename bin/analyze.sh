@@ -37,7 +37,7 @@ mkdir -p "$ANALYSIS_DIR" "$STATE_DIR"
 WX_JSON="$ANALYSIS_DIR/${BASE}.json"
 if [ ! -s "$WX_JSON" ]; then
   echo "[1/3] Diarization (whisperx + pyannote, ~15-30 min/hr audio)..."
-  whisperx "$AUDIO" --model medium --device cpu --compute_type int8 \
+  HF_TOKEN="$HF_TOKEN" whisperx "$AUDIO" --model medium --device cpu --compute_type int8 \
     --threads 8 --diarize --hf_token "$HF_TOKEN" \
     --output_dir "$ANALYSIS_DIR" --output_format json \
     > "$ANALYSIS_DIR/whisperx.log" 2>&1 \
