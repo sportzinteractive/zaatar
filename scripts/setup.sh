@@ -99,36 +99,43 @@ esac
 # ---- 2. calendar / meeting software -----------------------------------------
 say "2/6  Calendar (meeting prompts + auto-stop; Meet/Zoom/Teams/Webex links all detected)"
 ZAATARCAL="$ROOT/native/zaatarcal/zaatarcal"
-note "1) macOS Calendar (recommended - works with Google, Outlook, iCloud, Exchange)"
-note "2) Google Calendar (via gogcli CLI)"
+GCAL_PY="$ROOT/scripts/google-calendar.py"
+IS_MACOS=false; [ "$(uname)" = "Darwin" ] && IS_MACOS=true
+CAL_DEFAULT="2"  # Google OAuth default for non-macOS
+if [ "$IS_MACOS" = true ]; then
+  CAL_DEFAULT="1"
+  note "1) macOS Calendar (recommended - works with Google, Outlook, iCloud, Exchange)"
+fi
+note "2) Google Calendar (OAuth, cross-platform - no external tools needed)"
 note "3) Outlook / Microsoft 365 (via Microsoft Graph CLI)"
 note "4) None - start/stop recordings manually"
-ask "Choice" "1"
+ask "Choice" "$CAL_DEFAULT"
 CAL_SET=""
 case "$REPLY" in
   1)
-    # Compile zaatarcal if needed
-    if [ ! -x "$ZAATARCAL" ]; then
-      note "Compiling calendar helper..."
-      (cd "$ROOT/native/zaatarcal" && swiftc -O main.swift -o zaatarcal -framework EventKit) || {
-        note "WARN: failed to compile zaatarcal; skipping calendar setup"
-        break
-      }
+    if [ "$IS_MACOS" != true ]; then
+      note "macOS Calendar is only available on macOS. Choose another option."
+    else
+      # Compile zaatarcal if needed
+      if [ ! -x "$ZAATARCAL" ]; then
+        note "Compiling calendar helper..."
+        (cd "$ROOT/native/zaatarcal" && swiftc -O main.swift -o zaatarcal -framework EventKit) || {
+          note "WARN: failed to compile zaatarcal; skipping calendar setup"
+          break
+        }
+      fi
+      set_config ZAATAR_CALENDAR_CMD "'$ZAATARCAL'"
+      CAL_SET=1
+      note "Uses your macOS calendar accounts (System Settings > Internet Accounts)."
+      note "Add your Google or Outlook account there if not already configured."
+      note "First run will prompt for calendar access permission."
     fi
-    set_config ZAATAR_CALENDAR_CMD "'$ZAATARCAL'"
-    CAL_SET=1
-    note "Uses your macOS calendar accounts (System Settings > Internet Accounts)."
-    note "Add your Google or Outlook account there if not already configured."
-    note "First run will prompt for calendar access permission."
     ;;
   2)
-    set_config ZAATAR_CALENDAR_CMD "gog calendar events --today --max 50 -j --results-only"
+    set_config ZAATAR_CALENDAR_CMD "python3 '$GCAL_PY'"
     CAL_SET=1
-    if command -v gog >/dev/null 2>&1; then
-      note "gogcli found. If not authenticated yet: gog auth login"
-    else
-      note "NOTE: install gogcli (https://github.com/steipete/gogcli) then run: gog auth login"
-    fi
+    note "Running initial Google Calendar authorization..."
+    python3 "$GCAL_PY" --setup 2>&1 || note "WARN: setup failed; run 'python3 $GCAL_PY --setup' later"
     ;;
   3)
     set_config ZAATAR_CALENDAR_CMD "$ROOT/scripts/outlook-calendar.sh"
