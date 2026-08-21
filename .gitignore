@@ -3,6 +3,7 @@ native/zaatarcap/zaatarcap
 native/zaatarprompt/zaatarprompt
 native/zaatarviewer/zaatarviewer
 native/zaatarbar/zaatarbar
+native/zaatarcal/zaatarcal
 
 # virtualenvs (created at install time)
 vad/.venv/

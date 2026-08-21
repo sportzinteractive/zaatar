@@ -22,6 +22,8 @@ class Zaatar < Formula
            "-framework", "AppKit"
     system "swiftc", "-O", "native/zaatarbar/main.swift", "-o", "native/zaatarbar/zaatarbar",
            "-framework", "AppKit", "-framework", "AVFoundation", "-framework", "ServiceManagement"
+    system "swiftc", "-O", "native/zaatarcal/main.swift", "-o", "native/zaatarcal/zaatarcal",
+           "-framework", "EventKit"
 
     # Keep the repo layout intact in libexec (scripts resolve siblings
     # relatively), expose a single `zaatar` command on PATH.

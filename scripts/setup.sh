@@ -98,13 +98,30 @@ esac
 
 # ---- 2. calendar / meeting software -----------------------------------------
 say "2/6  Calendar (meeting prompts + auto-stop; Meet/Zoom/Teams/Webex links all detected)"
-note "1) Google Calendar (via gogcli)"
-note "2) Outlook / Microsoft 365 (via Microsoft Graph CLI)"
-note "3) None - start/stop recordings manually"
-ask "Choice" "3"
+ZAATARCAL="$ROOT/native/zaatarcal/zaatarcal"
+note "1) macOS Calendar (recommended - works with Google, Outlook, iCloud, Exchange)"
+note "2) Google Calendar (via gogcli CLI)"
+note "3) Outlook / Microsoft 365 (via Microsoft Graph CLI)"
+note "4) None - start/stop recordings manually"
+ask "Choice" "1"
 CAL_SET=""
 case "$REPLY" in
   1)
+    # Compile zaatarcal if needed
+    if [ ! -x "$ZAATARCAL" ]; then
+      note "Compiling calendar helper..."
+      (cd "$ROOT/native/zaatarcal" && swiftc -O main.swift -o zaatarcal -framework EventKit) || {
+        note "WARN: failed to compile zaatarcal; skipping calendar setup"
+        break
+      }
+    fi
+    set_config ZAATAR_CALENDAR_CMD "'$ZAATARCAL'"
+    CAL_SET=1
+    note "Uses your macOS calendar accounts (System Settings > Internet Accounts)."
+    note "Add your Google or Outlook account there if not already configured."
+    note "First run will prompt for calendar access permission."
+    ;;
+  2)
     set_config ZAATAR_CALENDAR_CMD "gog calendar events --today --max 50 -j --results-only"
     CAL_SET=1
     if command -v gog >/dev/null 2>&1; then
@@ -113,7 +130,7 @@ case "$REPLY" in
       note "NOTE: install gogcli (https://github.com/steipete/gogcli) then run: gog auth login"
     fi
     ;;
-  2)
+  3)
     set_config ZAATAR_CALENDAR_CMD "$ROOT/scripts/outlook-calendar.sh"
     CAL_SET=1
     if command -v mgc >/dev/null 2>&1; then
@@ -173,6 +190,7 @@ if [ ! -x "$ROOT/native/zaatarcap/zaatarcap" ]; then
   (cd "$ROOT/native/zaatarprompt" && swiftc -O main.swift -o zaatarprompt -framework AppKit)
   (cd "$ROOT/native/zaatarviewer" && swiftc -O main.swift -o zaatarviewer -framework AppKit)
   (cd "$ROOT/native/zaatarbar"    && swiftc -O main.swift -o zaatarbar    -framework AppKit -framework AVFoundation -framework ServiceManagement)
+  (cd "$ROOT/native/zaatarcal"    && swiftc -O main.swift -o zaatarcal    -framework EventKit)
 fi
 set_config ZAATAR_DIR "$ROOT"
 mkdir -p "$HOME/Applications"
