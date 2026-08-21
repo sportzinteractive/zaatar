@@ -86,6 +86,20 @@ WPROMPT=()
 # ${arr[@]+...} idiom: bash 3.2 + set -u treats an empty array expansion as fatal
 "$WHISPER" -m "$MODEL" -f "$AUDIO" -l auto -mc 0 ${WPROMPT[@]+"${WPROMPT[@]}"} -osrt -of "$TMP/orig" 2>&1 | tail -1
 
+# Progressive output: make transcript available immediately after whisper.cpp
+MD="$OUT_DIR/${BASE}.md"
+{
+  [ -n "$MTITLE" ] && echo "<!-- zaatar-title: ${MTITLE} -->"
+  echo "<!-- zaatar-status: transcribing -->"
+  echo "# ${MTITLE:-$BASE}"
+  echo
+  echo "> **Processing:** raw transcript available. Diarization and cleanup in progress..."
+  echo
+  echo "## Raw Transcript"
+  echo
+  cat "$TMP/orig.srt" 2>/dev/null || echo "(transcript failed)"
+} > "$MD"
+
 if [ "$FAST" = false ] && [ -n "$HF_TOKEN" ]; then
   DIARIZE_PY="$BIN_DIR/../lib/diarize.py"
   # Find a python with pyannote: zaatar's own venv first, then system python
@@ -145,10 +159,28 @@ fi
   fi
 } > "$RAW_MD"
 
+# Progressive output: update with diarization results
+{
+  [ -n "$MTITLE" ] && echo "<!-- zaatar-title: ${MTITLE} -->"
+  echo "<!-- zaatar-status: cleaning -->"
+  echo "# ${MTITLE:-$BASE}"
+  echo
+  echo "> **Processing:** transcript and speaker labels ready. LLM cleanup in progress..."
+  echo
+  echo "## Raw Transcript"
+  echo
+  cat "$TMP/orig.srt" 2>/dev/null || echo "(transcript failed)"
+  if [ "$DIARIZED_OK" = true ]; then
+    echo
+    echo "## Speaker Labels"
+    echo
+    cat "$TMP"/wx/*.srt 2>/dev/null || true
+  fi
+} > "$MD"
+
 fi  # REDO=false
 
 echo "[3/3] Claude cleanup (transcript + summary)..."
-MD="$OUT_DIR/${BASE}.md"
 CLEANUP_PROMPT="$(cat <<PROMPT
 You are cleaning up a raw Whisper transcript of a meeting. The conversation is in ${ZAATAR_LANGS}. The input below contains a timestamped original-language transcript, and possibly a speaker-diarized version of the same audio.
 
