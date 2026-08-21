@@ -160,4 +160,4 @@ You are recording people. Recording-consent laws vary by jurisdiction (some requ
 
 ## License
 
-MIT
+MIT. Some optional dependencies (emotion model, parselmouth, pyannote) have different licenses -- see [NOTICE.md](NOTICE.md) for details.
