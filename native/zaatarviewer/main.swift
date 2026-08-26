@@ -400,7 +400,8 @@ func loadEntries() -> [Entry] {
     }()
     // Only show the live-*.txt that matches the CURRENT recording (rec.meta).
     // Stale live files from prior recordings used to create duplicate LIVE rows;
-    // the viewer could select the wrong (empty/stale) one -> blank live view.
+    // the viewer could select the wrong (empty/stale) one -> blank live view
+    // (Roneel incident Aug 12).
     if recPidAlive,
        let liveFiles = try? fm.contentsOfDirectory(at: stateDir, includingPropertiesForKeys: nil) {
         let metaBase: String? = {
@@ -411,6 +412,7 @@ func loadEntries() -> [Entry] {
         for f in liveFiles where f.lastPathComponent.hasPrefix("live-") && f.pathExtension == "txt" {
             let raw = f.lastPathComponent
                 .replacingOccurrences(of: "live-", with: "")
+            // If rec.meta tells us the current base, only show that live file
             let fileBase = (raw as NSString).deletingPathExtension
             if let mb = metaBase, fileBase != mb { continue }
             let (name, when) = humanTitle(from: raw)
@@ -620,7 +622,7 @@ struct ActionItem {
     }
 
     var assigneeDisplay: String {
-        recipient.isEmpty || recipient == "self" ? owner : recipient
+        recipient.isEmpty || recipient == "self" ? owner : "\(owner) \u{2192} \(recipient)"
     }
 
     var srcPretty: String {
@@ -693,8 +695,17 @@ func renderLedger(_ content: String, url: URL) -> NSMutableAttributedString {
     let overdueCount = allItems.filter { $0.group(today: today) == .overdue }.count
     var summary = "\(openCount) open"
     if overdueCount > 0 { summary += " \u{00B7} \(overdueCount) overdue" }
-    doc.append(NSAttributedString(string: summary + "\n",
+    doc.append(NSAttributedString(string: summary + "  ",
         attributes: [.font: DS.body(size: 12), .foregroundColor: DS.textSecondary]))
+    // "+ Add item" button
+    let addPS = NSMutableParagraphStyle(); addPS.paragraphSpacing = 4
+    let addAttrs: [NSAttributedString.Key: Any] = [
+        .font: DS.body(size: 12, weight: .medium),
+        .foregroundColor: DS.brandGreen,
+        .link: URL(string: "zaatar-add://new")! as Any,
+        .cursor: NSCursor.pointingHand,
+        .paragraphStyle: addPS]
+    doc.append(NSAttributedString(string: "+ Add item\n", attributes: addAttrs))
 
     // Assignee filter bar
     let assignees = Array(Set(allItems.flatMap { [$0.owner, $0.recipient] }
@@ -1172,19 +1183,42 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
             guard !editKey.isEmpty, let item = ledgerItems[editKey], let sel = selectedURL,
                   var content = try? String(contentsOf: sel, encoding: .utf8) else { return true }
             let alert = NSAlert()
-            let tf = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
-            switch field {
-            case "text":  alert.messageText = "Edit action item"; tf.stringValue = item.text
-            case "owner": alert.messageText = "Edit assignee"; tf.stringValue = item.assigneeDisplay
-            case "due":   alert.messageText = "Edit due date (YYYY-MM-DD)"; tf.stringValue = item.due
-            default: return true
-            }
-            alert.accessoryView = tf
             alert.addButton(withTitle: "Save")
             alert.addButton(withTitle: "Cancel")
-            alert.window.initialFirstResponder = tf
-            guard alert.runModal() == .alertFirstButtonReturn else { return true }
-            let newVal = tf.stringValue.trimmingCharacters(in: .whitespaces)
+            var newVal = ""
+            if field == "due" {
+                alert.messageText = "Edit due date"
+                let dueContainer = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 30))
+                let editPicker = NSDatePicker(frame: NSRect(x: 0, y: 4, width: 150, height: 22))
+                editPicker.datePickerStyle = .textFieldAndStepper
+                editPicker.datePickerElements = .yearMonthDay
+                let editDf = DateFormatter(); editDf.dateFormat = "yyyy-MM-dd"
+                if let existing = editDf.date(from: item.due) { editPicker.dateValue = existing }
+                else { editPicker.dateValue = Date() }
+                let editNoDue = NSButton(checkboxWithTitle: "No due date", target: nil, action: nil)
+                editNoDue.frame = NSRect(x: 160, y: 4, width: 120, height: 22)
+                editNoDue.state = (item.due == "unspecified" || item.due.isEmpty) ? .on : .off
+                dueContainer.addSubview(editPicker); dueContainer.addSubview(editNoDue)
+                alert.accessoryView = dueContainer
+                alert.window.initialFirstResponder = editPicker
+                guard alert.runModal() == .alertFirstButtonReturn else { return true }
+                if editNoDue.state == .on {
+                    newVal = "unspecified"
+                } else {
+                    newVal = editDf.string(from: editPicker.dateValue)
+                }
+            } else {
+                let tf = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+                switch field {
+                case "text":  alert.messageText = "Edit action item"; tf.stringValue = item.text
+                case "owner": alert.messageText = "Edit assignee (Name -> Recipient)"; tf.stringValue = "\(item.owner) -> \(item.recipient)"
+                default: return true
+                }
+                alert.accessoryView = tf
+                alert.window.initialFirstResponder = tf
+                guard alert.runModal() == .alertFirstButtonReturn else { return true }
+                newVal = tf.stringValue.trimmingCharacters(in: .whitespaces)
+            }
             guard !newVal.isEmpty else { return true }
             var newLine = item.rawLine
             switch field {
@@ -1203,6 +1237,71 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
                 content = stripOrphanHeaders(content)
                 try? content.write(to: sel, atomically: true, encoding: .utf8)
             }
+        case "zaatar-add":
+            guard let sel = selectedURL else { return true }
+            let alert = NSAlert()
+            alert.messageText = "Add action item"
+            let container = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 100))
+            let textLabel = NSTextField(labelWithString: "What:")
+            textLabel.frame = NSRect(x: 0, y: 76, width: 50, height: 20)
+            let textField = NSTextField(frame: NSRect(x: 55, y: 76, width: 245, height: 22))
+            textField.placeholderString = "Action item description"
+            let ownerLabel = NSTextField(labelWithString: "Who:")
+            ownerLabel.frame = NSRect(x: 0, y: 46, width: 50, height: 20)
+            let ownerField = NSTextField(frame: NSRect(x: 55, y: 46, width: 245, height: 22))
+            ownerField.placeholderString = "Person responsible (e.g. Monojit, Jatin)"
+            ownerField.stringValue = "Monojit"
+            let dueLabel = NSTextField(labelWithString: "Due:")
+            dueLabel.frame = NSRect(x: 0, y: 16, width: 50, height: 20)
+            let duePicker = NSDatePicker(frame: NSRect(x: 55, y: 16, width: 150, height: 22))
+            duePicker.datePickerStyle = .textFieldAndStepper
+            duePicker.datePickerElements = .yearMonthDay
+            duePicker.dateValue = Date()
+            duePicker.minDate = Date()
+            let noDueCheck = NSButton(checkboxWithTitle: "No due date", target: nil, action: nil)
+            noDueCheck.frame = NSRect(x: 210, y: 16, width: 100, height: 22)
+            noDueCheck.state = .on
+            container.addSubview(textLabel); container.addSubview(textField)
+            container.addSubview(ownerLabel); container.addSubview(ownerField)
+            container.addSubview(dueLabel); container.addSubview(duePicker); container.addSubview(noDueCheck)
+            alert.accessoryView = container
+            alert.addButton(withTitle: "Add")
+            alert.addButton(withTitle: "Cancel")
+            alert.window.initialFirstResponder = textField
+            guard alert.runModal() == .alertFirstButtonReturn else { return true }
+            let itemText = textField.stringValue.trimmingCharacters(in: .whitespaces)
+            guard !itemText.isEmpty else { return true }
+            let ownerVal = ownerField.stringValue.trimmingCharacters(in: .whitespaces)
+            let ownerLower = ownerVal.lowercased()
+            let owner: String
+            if ownerVal.isEmpty || ownerLower == "monojit" || ownerLower == "self" || ownerLower == "me" {
+                owner = "Monojit -> self"
+            } else {
+                owner = "\(ownerVal) -> Monojit"
+            }
+            let dueVal: String
+            if noDueCheck.state == .on {
+                dueVal = "unspecified"
+            } else {
+                let dueDf = DateFormatter(); dueDf.dateFormat = "yyyy-MM-dd"
+                dueVal = dueDf.string(from: duePicker.dateValue)
+            }
+            let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd"
+            let today = df.string(from: Date())
+            let newLine = "- [ ] \(today) | \(owner) | \(itemText) | due: \(dueVal) | src: manual"
+            let header = "## \(today) manual"
+            var content = (try? String(contentsOf: sel, encoding: .utf8)) ?? ""
+            if content.contains(header) {
+                // Append under existing manual section for today
+                if let r = content.range(of: header) {
+                    let insertAt = content.index(r.upperBound, offsetBy: 0)
+                    content.insert(contentsOf: "\n\(newLine)\n", at: insertAt)
+                }
+            } else {
+                // Prepend new section (newest first)
+                content = "\(header)\n\(newLine)\n\n\(content)"
+            }
+            try? content.write(to: sel, atomically: true, encoding: .utf8)
         case "zaatar-filter":
             ledgerFilter = (key == "all" || key.isEmpty) ? "" : key.removingPercentEncoding ?? key
         default:
@@ -1510,8 +1609,8 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
 
             // Check for pre-meeting brief
             let briefsDir = transcriptsDir.appendingPathComponent("briefs")
-            let bdf = DateFormatter(); bdf.dateFormat = "yyyy-MM-dd"
-            let dayStr = bdf.string(from: ev.startTime)
+            let df = DateFormatter(); df.dateFormat = "yyyy-MM-dd"
+            let dayStr = df.string(from: ev.startTime)
             let slug = ev.summary.lowercased()
                 .replacingOccurrences(of: #"[^a-z0-9]+"#, with: "-", options: .regularExpression)
                 .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
