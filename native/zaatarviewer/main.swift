@@ -97,6 +97,10 @@ struct Prefs {
         get { bool("pref_behavioralRead", default: false) }
         set { d.set(newValue, forKey: "pref_behavioralRead") }
     }
+    static var emotionalEval: Bool {
+        get { bool("pref_emotionalEval") }
+        set { d.set(newValue, forKey: "pref_emotionalEval") }
+    }
     static var upcomingMeetings: Bool {
         get { bool("pref_upcomingMeetings") }
         set { d.set(newValue, forKey: "pref_upcomingMeetings") }
@@ -138,8 +142,10 @@ final class PrefsController: NSObject {
                get: { Prefs.actionItems }, set: { Prefs.actionItems = $0 }),
         Toggle(label: "Pre-meeting Briefs", desc: "Show AI-generated briefs before meetings",
                get: { Prefs.preMeetingBriefs }, set: { Prefs.preMeetingBriefs = $0 }),
-        Toggle(label: "Behavioral Read", desc: "Show speaker behavioral analysis tabs on meeting transcripts",
+        Toggle(label: "Behavioral Read", desc: "Show text-based speaker behavioral analysis in transcripts",
                get: { Prefs.behavioralRead }, set: { Prefs.behavioralRead = $0 }),
+        Toggle(label: "Emotional Eval", desc: "Show prosody/acoustic emotional evaluation tabs (requires audio analysis)",
+               get: { Prefs.emotionalEval }, set: { Prefs.emotionalEval = $0 }),
         Toggle(label: "Live Questions", desc: "Show AI question suggestions during live recordings",
                get: { Prefs.liveQuestions }, set: { Prefs.liveQuestions = $0 }),
         Toggle(label: "Timestamps", desc: "Show timestamp markers in transcripts",
@@ -1673,7 +1679,7 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
         tabs = e.isLive ? [] : buildTabs(content)
         if !Prefs.behavioralRead { tabs.removeAll { $0.0 == "Behavioral Read" } }
         // merge the emotional-eval sibling as extra tabs on the meeting entry
-        if Prefs.behavioralRead, !e.isLive, !e.url.lastPathComponent.hasSuffix("-behavioral.md") {
+        if Prefs.emotionalEval, !e.isLive, !e.url.lastPathComponent.hasSuffix("-behavioral.md") {
             let behURL = URL(fileURLWithPath: String(e.url.path.dropLast(3)) + "-behavioral.md")
             if let beh = try? String(contentsOf: behURL, encoding: .utf8) {
                 let extra = evalTabs(beh)
