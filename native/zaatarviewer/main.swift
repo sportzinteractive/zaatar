@@ -121,6 +121,10 @@ struct Prefs {
         get { bool("pref_timestamps") }
         set { d.set(newValue, forKey: "pref_timestamps") }
     }
+    static var rawTranscripts: Bool {
+        get { bool("pref_rawTranscripts", default: false) }
+        set { d.set(newValue, forKey: "pref_rawTranscripts") }
+    }
 }
 
 // --- Preferences Window ---
@@ -150,6 +154,8 @@ final class PrefsController: NSObject {
                get: { Prefs.liveQuestions }, set: { Prefs.liveQuestions = $0 }),
         Toggle(label: "Timestamps", desc: "Show timestamp markers in transcripts",
                get: { Prefs.timestamps }, set: { Prefs.timestamps = $0 }),
+        Toggle(label: "Raw Transcripts", desc: "Show the unprocessed whisper transcript as a tab",
+               get: { Prefs.rawTranscripts }, set: { Prefs.rawTranscripts = $0 }),
     ]
 
     func show(onClose: @escaping () -> Void) {
@@ -1689,6 +1695,15 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
                     tabs.removeAll { $0.0 == "Behavioral Read" }
                     tabs += extra
                 }
+            }
+        }
+        // merge raw transcript as a tab
+        if Prefs.rawTranscripts, !e.isLive, !e.url.lastPathComponent.hasSuffix("-raw.md"),
+           !e.url.lastPathComponent.hasSuffix("-behavioral.md") {
+            let rawURL = URL(fileURLWithPath: String(e.url.path.dropLast(3)) + "-raw.md")
+            if let raw = try? String(contentsOf: rawURL, encoding: .utf8), !raw.isEmpty {
+                if tabs.isEmpty { tabs = [("Notes", content)] }
+                tabs.append(("Raw Transcript", raw))
             }
         }
         if urlChanged {
