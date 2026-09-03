@@ -78,7 +78,7 @@ Calendar event starting
         |
    Event ends -> auto-stop
         |
-   whisper.cpp large-v3 (Metal GPU) -----> timestamped transcript
+   whisper.cpp large-v3-turbo (Metal GPU) -> timestamped transcript
         |
    pyannote (MPS/CUDA GPU) -----> speaker labels (optional)
         |

@@ -16,7 +16,11 @@ ZAATAR_CONFIG="${ZAATAR_CONFIG:-$HOME/.config/zaatar/config}"
 : "${ZAATAR_STATE_DIR:=$HOME/.local/state/zaatar}"
 
 # whisper.cpp models (https://huggingface.co/ggerganov/whisper.cpp)
-: "${ZAATAR_MODEL:=$HOME/.local/share/whisper-models/ggml-large-v3.bin}"
+# large-v3-turbo: half the size, ~2x faster, same quality. Falls back to full
+# large-v3 if turbo isn't installed (e.g. existing setups before the switch).
+_ZAATAR_MODEL_DEFAULT="$HOME/.local/share/whisper-models/ggml-large-v3-turbo.bin"
+[ ! -f "$_ZAATAR_MODEL_DEFAULT" ] && _ZAATAR_MODEL_DEFAULT="$HOME/.local/share/whisper-models/ggml-large-v3.bin"
+: "${ZAATAR_MODEL:=$_ZAATAR_MODEL_DEFAULT}"
 : "${ZAATAR_LIVE_MODEL:=$HOME/.local/share/whisper-models/ggml-base.bin}"
 
 # Native capture app (owns the mic + system-audio TCC grants)

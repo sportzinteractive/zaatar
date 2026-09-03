@@ -7,7 +7,7 @@
 # ZAATAR_TRANSCRIPTS_DIR="$HOME/Documents/zaatar/transcripts"
 # ZAATAR_STATE_DIR="$HOME/.local/state/zaatar"
 
-# ZAATAR_MODEL="$HOME/.local/share/whisper-models/ggml-large-v3.bin"
+# ZAATAR_MODEL="$HOME/.local/share/whisper-models/ggml-large-v3-turbo.bin"
 # ZAATAR_LIVE_MODEL="$HOME/.local/share/whisper-models/ggml-base.bin"
 
 # Languages spoken in your meetings (shapes the cleanup prompt):

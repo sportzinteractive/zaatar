@@ -155,10 +155,10 @@ esac
 say "3/6  Whisper models (local transcription)"
 mkdir -p "$MODELS_DIR"
 HF_BASE="https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
-if [ -f "$MODELS_DIR/ggml-large-v3.bin" ]; then
-  note "ggml-large-v3.bin already present"
-elif yesno "Download ggml-large-v3.bin (~3.1 GB, final transcription quality)?" "y"; then
-  curl -L -C - -o "$MODELS_DIR/ggml-large-v3.bin" "$HF_BASE/ggml-large-v3.bin"
+if [ -f "$MODELS_DIR/ggml-large-v3-turbo.bin" ]; then
+  note "ggml-large-v3-turbo.bin already present"
+elif yesno "Download ggml-large-v3-turbo.bin (~1.5 GB, recommended - fast + accurate)?" "y"; then
+  curl -L -C - -o "$MODELS_DIR/ggml-large-v3-turbo.bin" "$HF_BASE/ggml-large-v3-turbo.bin"
 fi
 if [ -f "$MODELS_DIR/ggml-base.bin" ]; then
   note "ggml-base.bin already present"
