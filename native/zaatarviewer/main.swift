@@ -1706,10 +1706,18 @@ final class ViewerController: NSObject, NSTableViewDataSource, NSTableViewDelega
                 tabs.append(("Raw Transcript", raw))
             }
         }
-        if urlChanged {
+        // Rebuild segments when the entry changes OR when the file's tab set
+        // changed underneath the open entry (re-run cleanup rewrote the doc);
+        // stale labels otherwise linger until an entry switch.
+        let currentLabels = (0..<segmented.segmentCount).map { segmented.label(forSegment: $0) ?? "" }
+        if urlChanged || currentLabels != tabs.map({ $0.0 }) {
+            let keep = urlChanged ? "" : (segmented.selectedSegment >= 0 && segmented.selectedSegment < currentLabels.count
+                ? currentLabels[segmented.selectedSegment] : "")
             segmented.segmentCount = tabs.count
             for (idx, t) in tabs.enumerated() { segmented.setLabel(t.0, forSegment: idx) }
-            if !tabs.isEmpty { segmented.selectedSegment = 0 }
+            if !tabs.isEmpty {
+                segmented.selectedSegment = tabs.firstIndex(where: { $0.0 == keep }) ?? 0
+            }
         }
         setTabsVisible(tabs.count >= 2)
         // reading-pane header: title + date (tabbed docs always get one; plain

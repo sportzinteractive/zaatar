@@ -50,6 +50,7 @@ ATTENDEES=""
 [ -s "$ATT_FILE" ] && ATTENDEES="$(head -1 "$ATT_FILE")"
 
 RAW_MD="$OUT_DIR/${BASE}-raw.md"
+MD="$OUT_DIR/${BASE}.md"   # also needed by the --redo-cleanup path (set -u)
 DIARIZED_OK=false
 
 if [ "$REDO" = true ]; then
@@ -238,6 +239,7 @@ Rules: do not invent content that is not in the input. If a passage is unintelli
 # Long meetings: two full transcripts exceed the model's max output tokens
 # (observed on 75-min meetings: truncated/tail-only output). Swap the two
 # transcript sections for condensed detailed notes; the raw file keeps the full record.
+BEHAV_PROMPT=""
 RAW_BYTES="$(wc -c < "$RAW_MD")"
 if [ "$RAW_BYTES" -gt 60000 ]; then
   echo "Long transcript ($RAW_BYTES bytes): using condensed cleanup prompt (no full transcripts)."
@@ -259,14 +261,21 @@ Topic-by-topic narrative of the whole meeting in English, in chronological order
 PROMPT
 )"
 
-  # Behavioral Read for long transcripts too
+  # Behavioral Read for long transcripts runs as a SEPARATE second LLM call:
+  # notes + behavioral in one response is big enough to trigger tail-only
+  # truncation (see structure check below). Each half stays under the limit.
   if [ "$ZAATAR_BEHAVIORAL_READ" = "true" ]; then
-    CLEANUP_PROMPT="${CLEANUP_PROMPT}${BEHAVIORAL_PROMPT}"
+    BEHAV_PROMPT="You are analyzing a raw Whisper transcript of a LONG meeting. The conversation is in ${ZAATAR_LANGS}. The input below contains a timestamped original-language transcript, and possibly a speaker-diarized version of the same audio.
+
+Produce ONLY the following markdown sections (no summary, no meeting notes):
+${BEHAVIORAL_PROMPT}
+
+Rules: do not invent content that is not in the input. Output only the markdown sections, nothing else."
   fi
 
   CLEANUP_PROMPT="${CLEANUP_PROMPT}
 
-Rules: do not invent content that is not in the input. If a passage is unintelligible, mark it [unclear]. Output only the markdown document, nothing else. Note at the end: \"Full verbatim transcript: see the raw transcript file.\""
+Rules: do not invent content that is not in the input. If a passage is unintelligible, mark it [unclear]. Output only the markdown document, nothing else. Do NOT include a Behavioral Read (produced separately if enabled). Note at the end: \"Full verbatim transcript: see the raw transcript file.\""
 fi
 
 CLEAN_OK=false
@@ -278,7 +287,14 @@ if zaatar_llm_available; then
     RC=0
     zaatar_llm "$CLEANUP_PROMPT" \
       < "$RAW_MD" > "$TMP/clean.md" 2>"$TMP/claude.err" || RC=$?
-    if [ "$RC" -eq 0 ] && [ -s "$TMP/clean.md" ]; then CLEAN_OK=true; break; fi
+    # Structure check: some LLM CLIs (observed with claude -p) nondeterministically
+    # return only the TAIL of a long response - the head of the document is lost.
+    # No Summary heading = malformed; treat as failure and retry, never publish it.
+    if [ "$RC" -eq 0 ] && [ -s "$TMP/clean.md" ] && grep -q '^## Summary' "$TMP/clean.md"; then
+      CLEAN_OK=true; break
+    fi
+    [ "$RC" -eq 0 ] && [ -s "$TMP/clean.md" ] && ! grep -q '^## Summary' "$TMP/clean.md" \
+      && echo "WARN: cleanup output malformed (no ## Summary - tail-only response?), retrying"
     echo "WARN: LLM cleanup attempt $ATTEMPT failed (exit $RC)"
     # Claude plan rate limit ("You've hit your limit - resets 3:50pm"): retrying
     # immediately just hits the same wall. Wait until the stated reset instead.
@@ -297,6 +313,30 @@ if zaatar_llm_available; then
     fi
     sleep 10
   done
+fi
+
+# Long-meeting second call: behavioral read appended to the notes. Failure here
+# degrades gracefully (notes without behavioral read), never blocks the notes.
+if [ "$CLEAN_OK" = true ] && [ -n "$BEHAV_PROMPT" ]; then
+  BEHAV_OK=false
+  BATT=0
+  while [ "$BATT" -lt 3 ]; do
+    BATT=$((BATT+1))
+    BRC=0
+    zaatar_llm "$BEHAV_PROMPT" \
+      < "$RAW_MD" > "$TMP/behav.md" 2>>"$TMP/claude.err" || BRC=$?
+    # Same tail-only guard as the notes call: no heading = head of response lost
+    if [ "$BRC" -eq 0 ] && [ -s "$TMP/behav.md" ] && grep -q '^## Behavioral Read' "$TMP/behav.md"; then
+      BEHAV_OK=true; break
+    fi
+    echo "WARN: behavioral read attempt $BATT failed (exit $BRC) or malformed (tail-only?), retrying"
+    sleep 5
+  done
+  if [ "$BEHAV_OK" = true ]; then
+    { echo; cat "$TMP/behav.md"; } >> "$TMP/clean.md"
+  else
+    echo "WARN: behavioral read failed after $BATT attempts; notes published without it"
+  fi
 fi
 
 if [ "$CLEAN_OK" = true ]; then
